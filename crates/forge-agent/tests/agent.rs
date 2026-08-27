@@ -307,3 +307,19 @@ fn allow_with_rewritten_input_serialises() {
         "bitbake -k core-image-minimal"
     );
 }
+
+/// A packaged Forge cannot assume `claude` is on PATH — the flake says so in
+/// its own package description, which must not be a promise the code breaks.
+#[test]
+fn the_claude_binary_can_be_overridden() {
+    use forge_agent::claude::resolve_binary;
+
+    assert_eq!(resolve_binary(None), "claude");
+    assert_eq!(
+        resolve_binary(Some("/nix/store/abc/bin/claude".into())),
+        "/nix/store/abc/bin/claude"
+    );
+    // An empty or blank value in a shell profile must not break the default.
+    assert_eq!(resolve_binary(Some(String::new())), "claude");
+    assert_eq!(resolve_binary(Some("   ".into())), "claude");
+}

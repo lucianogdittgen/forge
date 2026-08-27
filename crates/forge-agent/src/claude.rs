@@ -42,11 +42,25 @@ pub struct ClaudeAgentConfig {
     pub granted: Vec<Capability>,
 }
 
+/// Which `claude` to run.
+///
+/// Nix and other non-standard installs may not put `claude` on the PATH Forge
+/// inherits, and a packaged Forge cannot assume one. `FORGE_CLAUDE_BIN` is
+/// cheaper for the user than reasoning about why the agent did not start. An
+/// empty value is treated as unset, so `FORGE_CLAUDE_BIN=` in a shell profile
+/// does not break the default.
+pub fn resolve_binary(override_var: Option<String>) -> String {
+    override_var
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "claude".into())
+}
+
 impl ClaudeAgentConfig {
     pub fn new(cwd: impl Into<std::path::PathBuf>) -> Self {
         let cwd = cwd.into();
         Self {
-            binary: "claude".into(),
+            binary: resolve_binary(std::env::var("FORGE_CLAUDE_BIN").ok()),
             model: "claude-opus-5".into(),
             config_dir: cwd.join(".forge").join("claude"),
             cwd,
