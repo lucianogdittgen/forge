@@ -20,7 +20,9 @@ async fn main() -> anyhow::Result<()> {
     while let Some(ev) = agent.next_event().await {
         match ev {
             AgentEvent::Ready { tools } => {
-                if saw_ready { continue; }
+                if saw_ready {
+                    continue;
+                }
                 saw_ready = true;
                 println!("[ready] tool surface: {tools:?}");
                 // The Q1 claim, verified in Forge's own code path.
@@ -40,8 +42,15 @@ async fn main() -> anyhow::Result<()> {
             }
             AgentEvent::ToolCall { name, .. } => println!("[tool] {name}"),
             AgentEvent::Warning(w) => eprintln!("[stderr] {w}"),
-            AgentEvent::TurnFinished { session, cost_usd, is_error } => {
-                println!("[done] session={} cost={cost_usd:?} err={is_error}", session.0);
+            AgentEvent::TurnFinished {
+                session,
+                cost_usd,
+                is_error,
+            } => {
+                println!(
+                    "[done] session={} cost={cost_usd:?} err={is_error}",
+                    session.0
+                );
                 break;
             }
             _ => {}

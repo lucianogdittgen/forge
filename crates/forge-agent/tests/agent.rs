@@ -1,8 +1,8 @@
 //! Protocol parsing, capability classification, and the argv safety assertion.
 
-use forge_agent::claude::{ClaudeAgentConfig};
+use forge_agent::claude::ClaudeAgentConfig;
 use forge_agent::permission::{Capability, Decision};
-use forge_agent::protocol::{ContentBlock, Incoming, parse_line};
+use forge_agent::protocol::{parse_line, ContentBlock, Incoming};
 
 // ---------------------------------------------------------------- argv safety
 
@@ -25,7 +25,10 @@ fn default_argv_contains_the_load_bearing_flags() {
         "--include-partial-messages", // needed for deltas
         "--verbose",                  // stream-json emits nothing useful without it
     ] {
-        assert!(argv.iter().any(|a| a == flag), "missing {flag} in: {joined}");
+        assert!(
+            argv.iter().any(|a| a == flag),
+            "missing {flag} in: {joined}"
+        );
     }
 
     // --tools and --setting-sources must be followed by an empty string; a
@@ -33,10 +36,18 @@ fn default_argv_contains_the_load_bearing_flags() {
     let ti = argv.iter().position(|a| a == "--tools").unwrap();
     assert_eq!(argv[ti + 1], "", "--tools must be given an empty value");
     let si = argv.iter().position(|a| a == "--setting-sources").unwrap();
-    assert_eq!(argv[si + 1], "", "--setting-sources must be given an empty value");
+    assert_eq!(
+        argv[si + 1],
+        "",
+        "--setting-sources must be given an empty value"
+    );
 
     assert_eq!(
-        argv[argv.iter().position(|a| a == "--permission-prompt-tool").unwrap() + 1],
+        argv[argv
+            .iter()
+            .position(|a| a == "--permission-prompt-tool")
+            .unwrap()
+            + 1],
         "stdio"
     );
 }
@@ -51,10 +62,16 @@ fn default_argv_is_accepted() {
 #[test]
 fn forbidden_flags_are_rejected() {
     for bad in [
-        vec!["--allowed-tools".to_string(), "mcp__forge__proc_start".to_string()],
+        vec![
+            "--allowed-tools".to_string(),
+            "mcp__forge__proc_start".to_string(),
+        ],
         vec!["--dangerously-skip-permissions".to_string()],
         vec!["--allow-dangerously-skip-permissions".to_string()],
-        vec!["--permission-mode".to_string(), "bypassPermissions".to_string()],
+        vec![
+            "--permission-mode".to_string(),
+            "bypassPermissions".to_string(),
+        ],
     ] {
         let mut argv = ClaudeAgentConfig::new("/tmp").argv();
         argv.extend(bad.clone());
@@ -85,10 +102,22 @@ fn benign_permission_mode_is_allowed() {
 
 #[test]
 fn tools_classify_to_their_capabilities() {
-    assert_eq!(Capability::of_tool("mcp__forge__proc_start"), Capability::Execute);
-    assert_eq!(Capability::of_tool("mcp__forge__proc_status"), Capability::Read);
-    assert_eq!(Capability::of_tool("mcp__forge__fs_write"), Capability::Write);
-    assert_eq!(Capability::of_tool("mcp__forge__proc_signal"), Capability::Destructive);
+    assert_eq!(
+        Capability::of_tool("mcp__forge__proc_start"),
+        Capability::Execute
+    );
+    assert_eq!(
+        Capability::of_tool("mcp__forge__proc_status"),
+        Capability::Read
+    );
+    assert_eq!(
+        Capability::of_tool("mcp__forge__fs_write"),
+        Capability::Write
+    );
+    assert_eq!(
+        Capability::of_tool("mcp__forge__proc_signal"),
+        Capability::Destructive
+    );
     // Bare names work as well as wire names.
     assert_eq!(Capability::of_tool("fs_read"), Capability::Read);
 }
@@ -96,13 +125,20 @@ fn tools_classify_to_their_capabilities() {
 /// An unrecognised tool must be treated as the most dangerous thing it could be.
 #[test]
 fn unknown_tools_are_destructive() {
-    assert_eq!(Capability::of_tool("mcp__forge__something_new"), Capability::Destructive);
+    assert_eq!(
+        Capability::of_tool("mcp__forge__something_new"),
+        Capability::Destructive
+    );
     assert_eq!(Capability::of_tool("Bash"), Capability::Destructive);
 }
 
 #[test]
 fn granted_capabilities_auto_approve_but_destructive_never_does() {
-    let granted = vec![Capability::Read, Capability::Execute, Capability::Destructive];
+    let granted = vec![
+        Capability::Read,
+        Capability::Execute,
+        Capability::Destructive,
+    ];
     assert!(Capability::Read.auto_approvable(&granted));
     assert!(Capability::Execute.auto_approvable(&granted));
     // Even explicitly granted, this must still ask.
@@ -157,7 +193,12 @@ fn parses_a_control_request() {
         "subtype":"can_use_tool","tool_name":"mcp__forge__proc_start",
         "input":{"cmd":"rm -rf /"},"decision_reason":"Forge policy"}}"#;
     match parse_line(line) {
-        Incoming::ControlRequest { request_id, tool_name, input, reason } => {
+        Incoming::ControlRequest {
+            request_id,
+            tool_name,
+            input,
+            reason,
+        } => {
             assert_eq!(request_id, "req-1");
             assert_eq!(tool_name, "mcp__forge__proc_start");
             assert_eq!(input["cmd"], "rm -rf /");
@@ -171,7 +212,11 @@ fn parses_a_control_request() {
 fn parses_result_with_cost() {
     let line = r#"{"type":"result","session_id":"s1","is_error":false,"total_cost_usd":0.0067}"#;
     match parse_line(line) {
-        Incoming::Result { session_id, is_error, cost_usd } => {
+        Incoming::Result {
+            session_id,
+            is_error,
+            cost_usd,
+        } => {
             assert_eq!(session_id, "s1");
             assert!(!is_error);
             assert_eq!(cost_usd, Some(0.0067));
@@ -209,7 +254,10 @@ fn unknown_event_types_are_skipped() {
         r#"{"type":"compact_boundary"}"#,
         r#"{"type":"session_end"}"#,
     ] {
-        assert!(matches!(parse_line(line), Incoming::Other { .. }), "{line} should be Other");
+        assert!(
+            matches!(parse_line(line), Incoming::Other { .. }),
+            "{line} should be Other"
+        );
     }
 }
 
@@ -233,11 +281,16 @@ fn allow_serialises_correctly() {
 fn deny_carries_forges_message_to_the_model() {
     let s = forge_agent::protocol::control_response(
         "req-2",
-        &Decision::Deny { message: "DESTRUCTIVE not granted".into() },
+        &Decision::Deny {
+            message: "DESTRUCTIVE not granted".into(),
+        },
     );
     let v: serde_json::Value = serde_json::from_str(&s).unwrap();
     assert_eq!(v["response"]["response"]["behavior"], "deny");
-    assert_eq!(v["response"]["response"]["message"], "DESTRUCTIVE not granted");
+    assert_eq!(
+        v["response"]["response"]["message"],
+        "DESTRUCTIVE not granted"
+    );
 }
 
 /// The gate can clamp arguments, not just accept or refuse.

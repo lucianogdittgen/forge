@@ -63,5 +63,7 @@ pub enum Decision {
     /// Allow, but with arguments Forge rewrote — the gate can clamp a call
     /// rather than only accept or refuse it.
     AllowWithInput(serde_json::Value),
-    Deny { message: String },
+    Deny {
+        message: String,
+    },
 }

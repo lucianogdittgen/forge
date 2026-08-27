@@ -32,7 +32,11 @@ async fn run_to_exit(
     }
 }
 
-async fn wait_terminal(pm: &ProcessManager, id: forge_process::ProcessId, timeout: Duration) -> ProcessState {
+async fn wait_terminal(
+    pm: &ProcessManager,
+    id: forge_process::ProcessId,
+    timeout: Duration,
+) -> ProcessState {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let st = pm.get(id).expect("record").state;
@@ -47,7 +51,11 @@ async fn wait_terminal(pm: &ProcessManager, id: forge_process::ProcessId, timeou
 async fn captures_output_and_exit_code() {
     let pm = ProcessManager::new();
     let id = pm
-        .start(ProcessSpec::new("sh").arg("-c").arg("echo hello-forge; exit 7"))
+        .start(
+            ProcessSpec::new("sh")
+                .arg("-c")
+                .arg("echo hello-forge; exit 7"),
+        )
         .expect("start");
 
     let (out, code) = run_to_exit(&pm, id, Duration::from_secs(10)).await;
@@ -63,7 +71,9 @@ async fn captures_output_and_exit_code() {
 #[tokio::test]
 async fn nonzero_exit_is_exited_not_failed() {
     let pm = ProcessManager::new();
-    let id = pm.start(ProcessSpec::new("sh").arg("-c").arg("exit 3")).expect("start");
+    let id = pm
+        .start(ProcessSpec::new("sh").arg("-c").arg("exit 3"))
+        .expect("start");
     let (_, code) = run_to_exit(&pm, id, Duration::from_secs(10)).await;
     assert_eq!(code, Some(3));
     assert_eq!(pm.get(id).unwrap().state, ProcessState::Exited);
@@ -75,7 +85,11 @@ async fn missing_binary_is_failed() {
     let res = pm.start(ProcessSpec::new("forge-no-such-binary-xyzzy"));
     assert!(res.is_err(), "spawning a missing binary must not succeed");
 
-    let rec = pm.list().into_iter().next().expect("a record is still retained");
+    let rec = pm
+        .list()
+        .into_iter()
+        .next()
+        .expect("a record is still retained");
     assert_eq!(rec.state, ProcessState::Failed);
     assert_eq!(rec.exit_code, None);
 }
@@ -101,7 +115,13 @@ async fn resize_is_visible_to_the_child() {
 #[tokio::test]
 async fn stdin_reaches_the_child() {
     let pm = ProcessManager::new();
-    let id = pm.start(ProcessSpec::new("sh").arg("-c").arg("read line; echo got:$line")).expect("start");
+    let id = pm
+        .start(
+            ProcessSpec::new("sh")
+                .arg("-c")
+                .arg("read line; echo got:$line"),
+        )
+        .expect("start");
     tokio::time::sleep(Duration::from_millis(300)).await;
     pm.write_stdin(id, b"ping\n").expect("write");
 
@@ -138,7 +158,10 @@ async fn raw_mode_child_ignores_etx_but_not_killpg() {
     // killpg(SIGINT) must.
     pm.interrupt(id).expect("interrupt");
     let st = wait_terminal(&pm, id, Duration::from_secs(5)).await;
-    assert!(st.is_terminal(), "killpg(SIGINT) must reach a raw-mode child, got {st:?}");
+    assert!(
+        st.is_terminal(),
+        "killpg(SIGINT) must reach a raw-mode child, got {st:?}"
+    );
 }
 
 /// In cooked mode the keystroke path *does* work, which is why both exist.
@@ -146,12 +169,17 @@ async fn raw_mode_child_ignores_etx_but_not_killpg() {
 #[tokio::test]
 async fn cooked_mode_child_is_interrupted_by_etx() {
     let pm = ProcessManager::new();
-    let id = pm.start(ProcessSpec::new("sh").arg("-c").arg("sleep 30")).expect("start");
+    let id = pm
+        .start(ProcessSpec::new("sh").arg("-c").arg("sleep 30"))
+        .expect("start");
     tokio::time::sleep(Duration::from_millis(400)).await;
 
     pm.write_stdin(id, &[0x03]).expect("write etx");
     let st = wait_terminal(&pm, id, Duration::from_secs(5)).await;
-    assert!(st.is_terminal(), "0x03 should interrupt a default-mode child, got {st:?}");
+    assert!(
+        st.is_terminal(),
+        "0x03 should interrupt a default-mode child, got {st:?}"
+    );
 }
 
 /// Signals must reach grandchildren.
@@ -170,9 +198,14 @@ async fn terminate_reaches_grandchildren() {
     tokio::time::sleep(Duration::from_millis(400)).await;
 
     let pid = pm.get(id).unwrap().pid.expect("pid");
-    pm.terminate(id, Duration::from_millis(300)).expect("terminate");
+    pm.terminate(id, Duration::from_millis(300))
+        .expect("terminate");
     let st = wait_terminal(&pm, id, Duration::from_secs(8)).await;
-    assert_eq!(st, ProcessState::Interrupted, "a stopped process stays INTERRUPTED");
+    assert_eq!(
+        st,
+        ProcessState::Interrupted,
+        "a stopped process stays INTERRUPTED"
+    );
 
     // The whole group must be gone, not just the shell.
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -182,7 +215,10 @@ async fn terminate_reaches_grandchildren() {
         .output()
         .map(|o| !o.stdout.is_empty())
         .unwrap_or(false);
-    assert!(!alive, "process group {pid} still has live members after terminate");
+    assert!(
+        !alive,
+        "process group {pid} still has live members after terminate"
+    );
 }
 
 /// A process that ignores SIGINT must still die.
@@ -191,13 +227,21 @@ async fn terminate_reaches_grandchildren() {
 async fn terminate_escalates_past_a_stubborn_child() {
     let pm = ProcessManager::new();
     let id = pm
-        .start(ProcessSpec::new("sh").arg("-c").arg("trap '' INT TERM; sleep 30"))
+        .start(
+            ProcessSpec::new("sh")
+                .arg("-c")
+                .arg("trap '' INT TERM; sleep 30"),
+        )
         .expect("start");
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    pm.terminate(id, Duration::from_millis(400)).expect("terminate");
+    pm.terminate(id, Duration::from_millis(400))
+        .expect("terminate");
     let st = wait_terminal(&pm, id, Duration::from_secs(10)).await;
-    assert!(st.is_terminal(), "escalation to SIGKILL must terminate it, got {st:?}");
+    assert!(
+        st.is_terminal(),
+        "escalation to SIGKILL must terminate it, got {st:?}"
+    );
 }
 
 /// Attaching late must not lose output already produced.
@@ -205,15 +249,25 @@ async fn terminate_escalates_past_a_stubborn_child() {
 async fn attach_replays_output_produced_before_attaching() {
     let pm = ProcessManager::new();
     let id = pm
-        .start(ProcessSpec::new("sh").arg("-c").arg("echo early-line; sleep 1; echo late-line"))
+        .start(
+            ProcessSpec::new("sh")
+                .arg("-c")
+                .arg("echo early-line; sleep 1; echo late-line"),
+        )
         .expect("start");
 
     // Deliberately attach after the first line has certainly been written.
     tokio::time::sleep(Duration::from_millis(500)).await;
     let (out, _) = run_to_exit(&pm, id, Duration::from_secs(10)).await;
 
-    assert!(out.contains("early-line"), "late attach lost early output: {out:?}");
-    assert!(out.contains("late-line"), "late attach missed later output: {out:?}");
+    assert!(
+        out.contains("early-line"),
+        "late attach lost early output: {out:?}"
+    );
+    assert!(
+        out.contains("late-line"),
+        "late attach missed later output: {out:?}"
+    );
 }
 
 /// A carriage-return progress bar must not be retained as thousands of lines.
@@ -228,6 +282,9 @@ async fn carriage_return_progress_streams_through() {
         .expect("start");
 
     let (out, _) = run_to_exit(&pm, id, Duration::from_secs(10)).await;
-    assert!(out.contains('\r'), "carriage returns must survive to the emulator");
+    assert!(
+        out.contains('\r'),
+        "carriage returns must survive to the emulator"
+    );
     assert!(out.contains("progress:"), "output was: {out:?}");
 }

@@ -56,7 +56,12 @@ pub fn encode(key: KeyEvent) -> Option<Vec<u8>> {
     };
 
     // Alt is a leading ESC, except where the sequence already encodes it.
-    if alt && !matches!(key.code, KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right) {
+    if alt
+        && !matches!(
+            key.code,
+            KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right
+        )
+    {
         let mut v = vec![0x1b];
         v.extend(base);
         return Some(v);
@@ -70,7 +75,11 @@ fn encode_arrow(final_byte: u8, shift: bool, ctrl: bool, alt: bool) -> Vec<u8> {
     if m == 1 {
         vec![0x1b, b'[', final_byte]
     } else {
-        format!("\x1b[1;{m}").into_bytes().into_iter().chain([final_byte]).collect()
+        format!("\x1b[1;{m}")
+            .into_bytes()
+            .into_iter()
+            .chain([final_byte])
+            .collect()
     }
 }
 

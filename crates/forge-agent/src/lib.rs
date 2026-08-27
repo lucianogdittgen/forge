@@ -6,8 +6,8 @@
 //! stop at this boundary. That seam is what makes ADR-0002 reversible.
 
 pub mod claude;
-pub mod protocol;
 pub mod permission;
+pub mod protocol;
 
 pub use permission::{Capability, Decision};
 
@@ -38,16 +38,28 @@ pub enum AgentEvent {
     /// Summarised reasoning, when the model is configured to emit it.
     Thinking(String),
     /// The agent wants to run a tool.
-    ToolCall { id: String, name: String, input: serde_json::Value },
+    ToolCall {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
     /// A tool finished.
-    ToolResult { id: String, is_error: bool, content: String },
+    ToolResult {
+        id: String,
+        is_error: bool,
+        content: String,
+    },
     /// Forge must decide whether this call may proceed.
     ///
     /// The UI answers by resolving the paired responder; the agent process
     /// blocks meanwhile, which is expected and safe.
     ApprovalRequested(ApprovalRequest),
     /// The turn ended.
-    TurnFinished { session: SessionId, cost_usd: Option<f64>, is_error: bool },
+    TurnFinished {
+        session: SessionId,
+        cost_usd: Option<f64>,
+        is_error: bool,
+    },
     /// Non-fatal problem worth surfacing.
     Warning(String),
 }
@@ -86,7 +98,14 @@ impl ApprovalRequest {
         reason: Option<String>,
         responder: mpsc::UnboundedSender<Decision>,
     ) -> Self {
-        Self { request_id, tool_name, input, capability, reason, responder }
+        Self {
+            request_id,
+            tool_name,
+            input,
+            capability,
+            reason,
+            responder,
+        }
     }
 
     /// Answer the request. Safe to call once; later calls are ignored.

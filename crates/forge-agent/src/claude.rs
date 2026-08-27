@@ -6,7 +6,7 @@
 
 use std::process::Stdio;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::mpsc;
@@ -107,7 +107,10 @@ impl ClaudeAgentConfig {
     /// Refuse to start if argv contains anything that would void the gate.
     pub fn assert_argv_safe(argv: &[String]) -> Result<()> {
         for f in FORBIDDEN_FLAGS {
-            if argv.iter().any(|a| a == f || a.starts_with(&format!("{f}="))) {
+            if argv
+                .iter()
+                .any(|a| a == f || a.starts_with(&format!("{f}=")))
+            {
                 bail!(
                     "refusing to start: {f} bypasses Forge's permission gate \
                      (see ADR-0002); the agent would be able to act without approval"
@@ -152,19 +155,29 @@ impl ClaudeAgent {
             // Explicit, minimal environment. Inheriting the user's would pick up
             // their proxy base URL and stored credentials.
             .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()))
+            .env(
+                "PATH",
+                std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()),
+            )
             .env("HOME", std::env::var("HOME").unwrap_or_default())
             .env("CLAUDE_CONFIG_DIR", &cfg.config_dir)
             .env("CLAUDE_CODE_ENTRYPOINT", "sdk-rs");
 
-        for k in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"] {
+        for k in [
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_BASE_URL",
+        ] {
             if let Ok(v) = std::env::var(k) {
                 cmd.env(k, v);
             }
         }
 
         let mut child = cmd.spawn().with_context(|| {
-            format!("could not spawn `{}` — is the Claude CLI installed?", cfg.binary)
+            format!(
+                "could not spawn `{}` — is the Claude CLI installed?",
+                cfg.binary
+            )
         })?;
 
         let stdin = child.stdin.take().context("no stdin")?;
@@ -179,7 +192,12 @@ impl ClaudeAgent {
         Self::spawn_stderr(stderr, ev_tx);
         Self::spawn_writer(stdin, dec_rx, turn_rx);
 
-        Ok(Self { child, turns: turn_tx, events: ev_rx, session: None })
+        Ok(Self {
+            child,
+            turns: turn_tx,
+            events: ev_rx,
+            session: None,
+        })
     }
 
     /// Read stdout, turn protocol events into Forge events.
@@ -208,9 +226,15 @@ impl ClaudeAgent {
                                 ContentBlock::ToolUse { id, name, input } => {
                                     AgentEvent::ToolCall { id, name, input }
                                 }
-                                ContentBlock::ToolResult { id, is_error, content } => {
-                                    AgentEvent::ToolResult { id, is_error, content }
-                                }
+                                ContentBlock::ToolResult {
+                                    id,
+                                    is_error,
+                                    content,
+                                } => AgentEvent::ToolResult {
+                                    id,
+                                    is_error,
+                                    content,
+                                },
                                 _ => continue,
                             };
                             let _ = events.send(ev);
@@ -222,7 +246,12 @@ impl ClaudeAgent {
                     }
                     Incoming::StreamDelta { .. } => {}
 
-                    Incoming::ControlRequest { request_id, tool_name, input, reason } => {
+                    Incoming::ControlRequest {
+                        request_id,
+                        tool_name,
+                        input,
+                        reason,
+                    } => {
                         let cap = Capability::of_tool(&tool_name);
 
                         // Auto-approve only read-ish capabilities the session
@@ -255,7 +284,11 @@ impl ClaudeAgent {
                         });
                     }
 
-                    Incoming::Result { session_id, is_error, cost_usd } => {
+                    Incoming::Result {
+                        session_id,
+                        is_error,
+                        cost_usd,
+                    } => {
                         let _ = events.send(AgentEvent::TurnFinished {
                             session: SessionId(session_id),
                             cost_usd,
@@ -330,7 +363,7 @@ impl Agent for ClaudeAgent {
         // process is the supported way to cancel a turn in flight.
         #[cfg(unix)]
         if let Some(pid) = self.child.id() {
-            use nix::sys::signal::{Signal, kill};
+            use nix::sys::signal::{kill, Signal};
             use nix::unistd::Pid;
             let _ = kill(Pid::from_raw(pid as i32), Signal::SIGINT);
         }

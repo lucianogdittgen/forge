@@ -21,7 +21,10 @@ use serde_json::Value;
 #[derive(Debug, Clone)]
 pub enum Incoming {
     /// Session initialised. Repeats per turn.
-    Init { session_id: String, tools: Vec<String> },
+    Init {
+        session_id: String,
+        tools: Vec<String>,
+    },
     /// A complete assistant message.
     Assistant { content: Vec<ContentBlock> },
     /// A user-role message, which is how tool results come back.
@@ -36,7 +39,11 @@ pub enum Incoming {
         reason: Option<String>,
     },
     /// Turn finished.
-    Result { session_id: String, is_error: bool, cost_usd: Option<f64> },
+    Result {
+        session_id: String,
+        is_error: bool,
+        cost_usd: Option<f64>,
+    },
     /// A recognised-but-unhandled event. Never fatal.
     Other { kind: String },
     /// A line that was not JSON at all.
@@ -47,15 +54,25 @@ pub enum Incoming {
 pub enum ContentBlock {
     Text(String),
     Thinking(String),
-    ToolUse { id: String, name: String, input: Value },
-    ToolResult { id: String, is_error: bool, content: String },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
+    ToolResult {
+        id: String,
+        is_error: bool,
+        content: String,
+    },
 }
 
 /// Parse one line. Never fails: unrecognised input becomes `Unparsed`/`Other`.
 pub fn parse_line(line: &str) -> Incoming {
     let line = line.trim();
     if line.is_empty() {
-        return Incoming::Other { kind: "empty".into() };
+        return Incoming::Other {
+            kind: "empty".into(),
+        };
     }
     let Ok(v) = serde_json::from_str::<Value>(line) else {
         return Incoming::Unparsed(line.to_string());
@@ -67,16 +84,32 @@ pub fn parse_line(line: &str) -> Incoming {
             tools: v
                 .get("tools")
                 .and_then(|t| t.as_array())
-                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default(),
         },
 
-        "assistant" => Incoming::Assistant { content: blocks(&v) },
-        "user" => Incoming::User { content: blocks(&v) },
+        "assistant" => Incoming::Assistant {
+            content: blocks(&v),
+        },
+        "user" => Incoming::User {
+            content: blocks(&v),
+        },
 
         "stream_event" => {
-            let d = v.get("event").and_then(|e| e.get("delta")).cloned().unwrap_or(Value::Null);
-            let kind = d.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
+            let d = v
+                .get("event")
+                .and_then(|e| e.get("delta"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            let kind = d
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
             let text = d
                 .get("text")
                 .or_else(|| d.get("thinking"))
@@ -93,7 +126,10 @@ pub fn parse_line(line: &str) -> Incoming {
                 request_id: str_field(&v, "request_id"),
                 tool_name: str_field(&r, "tool_name"),
                 input: r.get("input").cloned().unwrap_or(Value::Null),
-                reason: r.get("decision_reason").and_then(|x| x.as_str()).map(String::from),
+                reason: r
+                    .get("decision_reason")
+                    .and_then(|x| x.as_str())
+                    .map(String::from),
             }
         }
 
@@ -103,7 +139,9 @@ pub fn parse_line(line: &str) -> Incoming {
             cost_usd: v.get("total_cost_usd").and_then(|c| c.as_f64()),
         },
 
-        other => Incoming::Other { kind: other.to_string() },
+        other => Incoming::Other {
+            kind: other.to_string(),
+        },
     }
 }
 
@@ -161,7 +199,10 @@ impl UserTurn {
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             kind: "user",
-            message: UserMessage { role: "user", content: text.into() },
+            message: UserMessage {
+                role: "user",
+                content: text.into(),
+            },
         }
     }
 }

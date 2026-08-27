@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::broadcast;
 
 /// Opaque, Forge-issued process handle.
@@ -126,7 +126,11 @@ pub struct ProcessRecord {
 impl ProcessRecord {
     pub fn runtime(&self) -> Option<Duration> {
         let start = self.started_at?;
-        Some(self.ended_at.unwrap_or_else(Instant::now).duration_since(start))
+        Some(
+            self.ended_at
+                .unwrap_or_else(Instant::now)
+                .duration_since(start),
+        )
     }
 }
 
@@ -136,7 +140,10 @@ pub enum ProcessEvent {
     /// here; VT emulation is the terminal layer's job.
     Output(Arc<Vec<u8>>),
     StateChanged(ProcessState),
-    Exited { code: Option<i32>, signal: Option<i32> },
+    Exited {
+        code: Option<i32>,
+        signal: Option<i32>,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -365,7 +372,11 @@ impl ProcessManager {
         std::thread::Builder::new()
             .name(format!("forge-pty-wait-{}", id.0))
             .spawn(move || {
-                let mut child = match inner.lock().unwrap().get_mut(&id).and_then(|e| e.child.take())
+                let mut child = match inner
+                    .lock()
+                    .unwrap()
+                    .get_mut(&id)
+                    .and_then(|e| e.child.take())
                 {
                     Some(c) => c,
                     None => return,
@@ -437,7 +448,9 @@ impl ProcessManager {
 
     pub fn get(&self, id: ProcessId) -> Result<ProcessRecord> {
         let g = self.inner.lock().unwrap();
-        g.get(&id).map(|e| e.record.clone()).ok_or(ProcessError::NoSuchProcess(id))
+        g.get(&id)
+            .map(|e| e.record.clone())
+            .ok_or(ProcessError::NoSuchProcess(id))
     }
 
     pub fn list(&self) -> Vec<ProcessRecord> {
@@ -461,7 +474,10 @@ impl ProcessManager {
         if entry.record.state.is_terminal() {
             return Err(ProcessError::AlreadyTerminated(id));
         }
-        let w = entry.writer.as_mut().ok_or(ProcessError::AlreadyTerminated(id))?;
+        let w = entry
+            .writer
+            .as_mut()
+            .ok_or(ProcessError::AlreadyTerminated(id))?;
         w.write_all(data)?;
         w.flush()?;
         Ok(())
@@ -475,8 +491,13 @@ impl ProcessManager {
         if let Some(m) = entry.master.as_ref() {
             // TIOCSWINSZ, which immediately delivers SIGWINCH to the child's
             // foreground process group.
-            m.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
-                .map_err(|e| ProcessError::Pty(e.to_string()))?;
+            m.resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| ProcessError::Pty(e.to_string()))?;
         }
         Ok(())
     }
@@ -498,7 +519,10 @@ impl ProcessManager {
         if entry.record.state.is_terminal() {
             return Err(ProcessError::AlreadyTerminated(id));
         }
-        let pid = entry.record.pid.ok_or(ProcessError::AlreadyTerminated(id))?;
+        let pid = entry
+            .record
+            .pid
+            .ok_or(ProcessError::AlreadyTerminated(id))?;
         entry.record.signal = Some(sig as i32);
 
         killpg(Pid::from_raw(pid as i32), sig)
@@ -532,7 +556,9 @@ impl ProcessManager {
                 return Err(ProcessError::AlreadyTerminated(id));
             }
             entry.record.state = ProcessState::Stopping;
-            let _ = entry.events.send(ProcessEvent::StateChanged(ProcessState::Stopping));
+            let _ = entry
+                .events
+                .send(ProcessEvent::StateChanged(ProcessState::Stopping));
         }
 
         self.signal(id, Signal::SIGINT)?;
