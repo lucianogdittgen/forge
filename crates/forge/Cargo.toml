@@ -10,3 +10,13 @@ name = "forge"
 path = "src/main.rs"
 
 [dependencies]
+anyhow.workspace = true
+crossterm.workspace = true
+forge-process = { version = "0.1.0", path = "../forge-process" }
+forge-terminal = { version = "0.1.0", path = "../forge-terminal" }
+forge-tui = { version = "0.1.0", path = "../forge-tui" }
+futures = "0.3.34"
+ratatui.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
