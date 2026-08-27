@@ -6,3 +6,13 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+crossterm.workspace = true
+forge-process = { version = "0.1.0", path = "../forge-process" }
+forge-terminal = { version = "0.1.0", path = "../forge-terminal" }
+ratatui.workspace = true
+tokio.workspace = true
+tui-term.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
