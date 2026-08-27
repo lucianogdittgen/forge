@@ -28,17 +28,18 @@ you had typed it yourself. The agent doesn't stand between you and your build.
 ## Status
 
 **Early, but the loop closes.** You can type a request on the left, watch Claude
-start a process, approve it, and see that process run live on the right.
+read and edit your tree, start a build, and see that build run live on the
+right.
 
 | Component | State |
 |---|---|
-| PTY process engine | working, 11 tests |
+| PTY process engine | working, 12 tests |
 | Terminal emulator | working, 12 tests |
-| Terminal pane + key handling | working, 15 tests |
-| Two-pane TUI shell | working, 17 tests |
-| Claude agent integration | working, 19 tests |
-| Tool server + permission gate | working, 12 tests |
-| Files / Git / persistence | not started |
+| Terminal pane + key handling | working, 17 tests |
+| Two-pane TUI shell | working, 21 tests |
+| Claude agent integration | working, 32 tests |
+| Tool server + permission gate | working, 14 tests |
+| Git integration / persistence | not started |
 
 Requires the `claude` CLI on your `PATH`. Without it Forge still runs — it is a
 terminal with a note explaining why nobody is home on the left.
@@ -93,15 +94,30 @@ terminal pane and the agent subscribe independently, and the agent has no
 privileged access to the registry. There is no code path by which it can run
 something you cannot see.
 
-The agent's entire tool surface is seven process operations — `proc_start`,
-`proc_list`, `proc_status`, `proc_output`, `proc_wait`, `proc_input`,
-`proc_signal` — served to it over MCP. It has no shell, no file access, and none
-of Claude Code's built-in tools; Forge starts it with `--tools ""` and refuses to
-run if the agent reports a tool Forge does not own. Each tool carries a
-capability (`READ`/`WRITE`/`EXECUTE`/`NETWORK`/`DESTRUCTIVE`), reads are silent,
-starting a process asks you, and signalling one can never be pre-approved. An
-unclassified tool counts as destructive, so forgetting to classify one fails
-closed.
+The agent reads and edits your tree like any coding agent — `Read`, `Edit`,
+`Write`, `NotebookEdit`, `WebFetch`, `WebSearch` — and on top of that gets seven
+process operations over MCP: `proc_start`, `proc_list`, `proc_status`,
+`proc_output`, `proc_wait`, `proc_input`, `proc_signal`.
+
+What it does **not** get is a shell. `Bash` runs a command and returns its output
+into the model's context, so a forty-minute build is billed by the line and
+re-sent every turn. `proc_start` runs a command and returns an *id*: the bytes go
+to the PTY and to your eyes. That single subtraction is what makes a long build
+cost the same as a short one. Forge refuses to start if `Bash`, `Task`,
+`Workflow`, or `Skill` is in the tool list, and says so loudly if one shows up at
+runtime.
+
+Output enters the model's context only when it asks, and then under a hard cap —
+40 lines by default, 200 at most — and the reply says what it trimmed, so it
+narrows its question instead of re-reading the build. Usually it doesn't need to:
+`proc_wait` gives it the exit code for free.
+
+Each tool carries a capability (`READ`/`WRITE`/`EXECUTE`/`NETWORK`/
+`DESTRUCTIVE`). Reads are silent; edits inside the workspace go through and show
+up in the conversation as a line naming the file and the lines changed; edits
+*outside* it ask; starting a process asks; signalling one can never be
+pre-approved. An unclassified tool counts as destructive, so forgetting to
+classify one fails closed.
 
 Even the agent's own view of output goes through the same VT emulator as your
 pane, so a progress bar that rewrites itself ten thousand times is one line to

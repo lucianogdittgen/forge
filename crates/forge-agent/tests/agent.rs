@@ -31,10 +31,22 @@ fn default_argv_contains_the_load_bearing_flags() {
         );
     }
 
-    // --tools and --setting-sources must be followed by an empty string; a
-    // missing value would mean "default", i.e. wide open.
+    // --tools names an explicit subset. What matters is not which tools are on
+    // the list but that no command-runner is: with `Bash` the agent could run a
+    // build the terminal pane never sees, and pay for its output in context.
     let ti = argv.iter().position(|a| a == "--tools").unwrap();
-    assert_eq!(argv[ti + 1], "", "--tools must be given an empty value");
+    let listed: Vec<&str> = argv[ti + 1].split(',').collect();
+    assert!(listed.contains(&"Read") && listed.contains(&"Edit"));
+    for shell in ["Bash", "Task", "Workflow", "Skill"] {
+        assert!(
+            !listed.contains(&shell),
+            "{shell} must not be granted: {listed:?}"
+        );
+    }
+    assert_ne!(argv[ti + 1], "default", "--tools default is every built-in");
+
+    // --setting-sources must be followed by an empty string; a missing value
+    // would let user settings plant allow-rules that void the gate.
     let si = argv.iter().position(|a| a == "--setting-sources").unwrap();
     assert_eq!(
         argv[si + 1],
@@ -111,15 +123,19 @@ fn tools_classify_to_their_capabilities() {
         Capability::Read
     );
     assert_eq!(
-        Capability::of_tool("mcp__forge__fs_write"),
-        Capability::Write
-    );
-    assert_eq!(
         Capability::of_tool("mcp__forge__proc_signal"),
         Capability::Destructive
     );
     // Bare names work as well as wire names.
-    assert_eq!(Capability::of_tool("fs_read"), Capability::Read);
+    assert_eq!(Capability::of_tool("proc_output"), Capability::Read);
+
+    // The built-ins Forge hands the agent are classified too; without this they
+    // fall through to Destructive and every edit prompts.
+    assert_eq!(Capability::of_tool("Read"), Capability::Read);
+    assert_eq!(Capability::of_tool("Edit"), Capability::Write);
+    assert_eq!(Capability::of_tool("Write"), Capability::Write);
+    assert_eq!(Capability::of_tool("NotebookEdit"), Capability::Write);
+    assert_eq!(Capability::of_tool("WebFetch"), Capability::Network);
 }
 
 /// An unrecognised tool must be treated as the most dangerous thing it could be.
@@ -322,4 +338,286 @@ fn the_claude_binary_can_be_overridden() {
     // An empty or blank value in a shell profile must not break the default.
     assert_eq!(resolve_binary(Some(String::new())), "claude");
     assert_eq!(resolve_binary(Some("   ".into())), "claude");
+}
+
+/// Which tools actually reach Forge's permission gate.
+///
+/// Forge's whole permission model assumes `--permission-prompt-tool stdio`
+/// invokes `canUseTool` for *built-in* tools, not only MCP ones. That is an
+/// assumption about the CLI's behaviour, not about Forge's code, so it is
+/// checked against the real binary rather than reasoned about.
+///
+/// Ignored by default: needs the CLI, credentials and a network round trip.
+/// Run with `cargo test -p forge-agent -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore = "spawns the real claude CLI"]
+async fn the_gate_sees_built_in_tools() {
+    use forge_agent::claude::{ClaudeAgent, ClaudeAgentConfig};
+    use forge_agent::{Agent, AgentEvent, Decision};
+    use std::time::Duration;
+
+    let dir = std::env::temp_dir().join("forge-gate-probe");
+    std::fs::create_dir_all(&dir).unwrap();
+    let readable = dir.join("probe.txt");
+    std::fs::write(&readable, "before\n").unwrap();
+    // Deliberately *outside* the workspace, so the policy asks rather than
+    // auto-approving and the gate event is observable at all.
+    let outside = std::env::temp_dir().join("forge-gate-probe-outside.txt");
+    std::fs::write(&outside, "before\n").unwrap();
+
+    let mut cfg = ClaudeAgentConfig::new(dir.clone());
+    cfg.tools = ["Read", "Edit", "Write"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    // Grant nothing, so anything the gate sees must surface as a request.
+    cfg.granted = vec![];
+    cfg.system_prompt = Some("Do exactly what you are asked, with no commentary.".into());
+
+    let mut agent = ClaudeAgent::spawn(cfg).await.unwrap();
+    agent
+        .send(&format!(
+            "Read the file {} and then use Edit on {} to change the word \
+             `before` to `after`.",
+            readable.display(),
+            outside.display()
+        ))
+        .await
+        .unwrap();
+
+    let mut surface: Vec<String> = Vec::new();
+    let mut called: Vec<String> = Vec::new();
+    let mut gated: Vec<String> = Vec::new();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        let Ok(ev) = tokio::time::timeout_at(deadline, agent.next_event()).await else {
+            break;
+        };
+        let Some(ev) = ev else { break };
+        match ev {
+            AgentEvent::Ready { tools } => surface = tools,
+            AgentEvent::ToolCall { name, .. } => called.push(name),
+            AgentEvent::ApprovalRequested(req) => {
+                gated.push(req.tool_name.clone());
+                req.respond(Decision::Allow);
+            }
+            AgentEvent::TurnFinished { .. } => break,
+            _ => {}
+        }
+    }
+
+    eprintln!("surface: {surface:?}");
+    eprintln!("called:  {called:?}");
+    eprintln!("gated:   {gated:?}");
+
+    assert!(
+        !surface.contains(&"Bash".to_string()),
+        "Bash leaked in: {surface:?}"
+    );
+    assert!(
+        called.iter().any(|t| t == "Edit"),
+        "the model never tried to edit"
+    );
+    assert!(
+        gated.iter().any(|t| t == "Edit"),
+        "Edit did NOT reach Forge's gate — the permission model cannot cover edits. \
+         called={called:?} gated={gated:?}"
+    );
+
+    // The other half, and the one worth pinning down: reads go through the gate
+    // too. Nothing is granted here, so a `Read` that Forge cannot auto-approve
+    // must surface as a request — and it does. The gate is therefore a real
+    // boundary for every capability class, not only for writes.
+    //
+    // This is easy to get backwards. If `granted` contains `Read`, Forge
+    // approves it itself and no request is ever emitted; that looks identical
+    // to the CLI not asking. Hence `granted = []` above.
+    assert!(
+        called.iter().any(|t| t == "Read"),
+        "the model never tried to read, so this proves nothing: called={called:?}"
+    );
+    assert!(
+        gated.iter().any(|t| t == "Read"),
+        "Read did not reach the gate — Forge cannot deny reads. gated={gated:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&outside);
+}
+
+mod policy {
+    use forge_agent::{Capability, Policy, Verdict};
+    use serde_json::json;
+
+    fn workspace() -> (tempdir::Dir, Policy) {
+        let d = tempdir::Dir::new("forge-policy");
+        let p = Policy::new(d.path(), vec![Capability::Read]);
+        (d, p)
+    }
+
+    fn edit(path: &str) -> serde_json::Value {
+        json!({ "file_path": path })
+    }
+
+    #[test]
+    fn an_edit_inside_the_workspace_does_not_interrupt() {
+        let (d, p) = workspace();
+        let inside = d.path().join("src").join("main.rs");
+        std::fs::create_dir_all(inside.parent().unwrap()).unwrap();
+        assert_eq!(
+            p.decide("Edit", &edit(inside.to_str().unwrap())),
+            Verdict::Allow
+        );
+    }
+
+    #[test]
+    fn a_file_that_does_not_exist_yet_is_still_inside() {
+        // A `Write` names its target before it exists; refusing to resolve it
+        // would make creating a file always prompt.
+        let (d, p) = workspace();
+        let new = d.path().join("does/not/exist/yet.rs");
+        assert_eq!(
+            p.decide("Write", &edit(new.to_str().unwrap())),
+            Verdict::Allow
+        );
+    }
+
+    #[test]
+    fn a_relative_path_is_resolved_against_the_workspace() {
+        let (_d, p) = workspace();
+        assert_eq!(p.decide("Edit", &edit("src/lib.rs")), Verdict::Allow);
+    }
+
+    #[test]
+    fn an_edit_outside_the_workspace_asks() {
+        let (_d, p) = workspace();
+        assert_eq!(p.decide("Edit", &edit("/etc/passwd")), Verdict::Ask);
+        assert_eq!(
+            p.decide("Write", &edit("/home/someone/.ssh/authorized_keys")),
+            Verdict::Ask
+        );
+    }
+
+    #[test]
+    fn dot_dot_cannot_climb_out_of_the_workspace() {
+        let (_d, p) = workspace();
+        assert_eq!(p.decide("Edit", &edit("../../../etc/passwd")), Verdict::Ask);
+        assert_eq!(
+            p.decide("Edit", &edit("src/../../outside.rs")),
+            Verdict::Ask
+        );
+    }
+
+    #[test]
+    fn dot_dot_that_stays_inside_is_still_inside() {
+        let (d, p) = workspace();
+        std::fs::create_dir_all(d.path().join("a")).unwrap();
+        assert_eq!(p.decide("Edit", &edit("a/../b.rs")), Verdict::Allow);
+    }
+
+    #[test]
+    fn a_symlink_out_of_the_tree_does_not_smuggle_a_path_in() {
+        // The check must resolve links, or `ws/escape/passwd` reads as inside
+        // the workspace while pointing at /etc.
+        let (d, p) = workspace();
+        let link = d.path().join("escape");
+        std::os::unix::fs::symlink("/etc", &link).unwrap();
+        assert_eq!(p.decide("Edit", &edit("escape/passwd")), Verdict::Ask);
+    }
+
+    #[test]
+    fn a_call_with_no_path_asks_rather_than_guessing() {
+        let (_d, p) = workspace();
+        assert_eq!(p.decide("Edit", &json!({})), Verdict::Ask);
+        assert_eq!(p.decide("Edit", &edit("")), Verdict::Ask);
+    }
+
+    #[test]
+    fn reads_and_granted_capabilities_go_through() {
+        let (_d, p) = workspace();
+        assert_eq!(p.decide("Read", &edit("/anywhere/at/all")), Verdict::Allow);
+        assert_eq!(
+            p.decide("mcp__forge__proc_list", &json!({})),
+            Verdict::Allow
+        );
+    }
+
+    #[test]
+    fn starting_a_process_and_killing_one_both_ask() {
+        let (_d, p) = workspace();
+        assert_eq!(
+            p.decide("mcp__forge__proc_start", &json!({"command": "bitbake"})),
+            Verdict::Ask
+        );
+        assert_eq!(
+            p.decide("mcp__forge__proc_signal", &json!({"signal": "KILL"})),
+            Verdict::Ask
+        );
+    }
+
+    #[test]
+    fn a_tool_forge_does_not_know_asks_even_if_everything_is_granted() {
+        let d = tempdir::Dir::new("forge-policy-granted");
+        let p = Policy::new(
+            d.path(),
+            vec![
+                Capability::Read,
+                Capability::Write,
+                Capability::Execute,
+                Capability::Network,
+                Capability::Destructive,
+            ],
+        );
+        assert_eq!(p.decide("SomeNewTool", &json!({})), Verdict::Ask);
+    }
+
+    /// Minimal scratch directory; the workspace must be a real path because the
+    /// policy canonicalises it.
+    pub mod tempdir {
+        use std::path::{Path, PathBuf};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        static N: AtomicU32 = AtomicU32::new(0);
+
+        pub struct Dir(PathBuf);
+
+        impl Dir {
+            pub fn new(tag: &str) -> Self {
+                let n = N.fetch_add(1, Ordering::Relaxed);
+                let p = std::env::temp_dir().join(format!("{tag}-{}-{n}", std::process::id()));
+                std::fs::create_dir_all(&p).unwrap();
+                Self(p)
+            }
+            pub fn path(&self) -> &Path {
+                &self.0
+            }
+        }
+
+        impl Drop for Dir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+    }
+}
+
+/// The assertion that keeps the product's promise, at startup rather than in a
+/// comment: a shell tool would let the agent run work the pane cannot show.
+#[test]
+fn forge_refuses_to_start_with_a_shell_tool() {
+    use forge_agent::claude::ClaudeAgentConfig;
+
+    for shell in ["Bash", "Task", "Workflow", "Skill"] {
+        let mut cfg = ClaudeAgentConfig::new("/tmp");
+        cfg.tools = vec!["Read".into(), shell.to_string()];
+        let err = ClaudeAgentConfig::assert_argv_safe(&cfg.argv())
+            .expect_err("{shell} should have been refused");
+        let msg = err.to_string();
+        assert!(msg.contains(shell), "error should name the tool: {msg}");
+    }
+
+    // The default surface must actually pass its own check.
+    let cfg = ClaudeAgentConfig::new("/tmp");
+    ClaudeAgentConfig::assert_argv_safe(&cfg.argv()).unwrap();
 }

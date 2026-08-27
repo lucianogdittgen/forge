@@ -439,3 +439,82 @@ fn every_tool_is_classified_by_the_permission_table() {
         Capability::Destructive
     ]));
 }
+
+/// A build's output must not be able to flood the model's context.
+///
+/// This is the token half of the product: the developer watches the whole
+/// stream at full fidelity, and the agent's copy is deliberately small.
+#[tokio::test]
+async fn reading_output_is_hard_capped_and_says_what_it_withheld() {
+    let s = server().await;
+
+    let (text, err) = call_tool(
+        &s.url,
+        "proc_start",
+        json!({ "command": "sh", "args": ["-c", "i=1; while [ $i -le 600 ]; do echo line $i; i=$((i+1)); done"] }),
+    )
+    .await;
+    assert!(!err, "{text}");
+    let id = serde_json::from_str::<Value>(&text).unwrap()["process_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    call_tool(&s.url, "proc_wait", json!({ "process_id": id })).await;
+
+    // The default is small.
+    let (out, _) = call_tool(&s.url, "proc_output", json!({ "process_id": id })).await;
+    let shown = out.lines().filter(|l| l.starts_with("line ")).count();
+    assert!(shown <= 40, "default returned {shown} lines");
+    assert!(shown > 0, "nothing came back: {out:?}");
+
+    // And it says what it withheld, so the model can narrow rather than ask
+    // again and pay twice.
+    assert!(
+        out.contains("showing the last"),
+        "truncation was silent: {out:?}"
+    );
+
+    // Asking for more than the cap does not get more than the cap.
+    let (greedy, _) = call_tool(
+        &s.url,
+        "proc_output",
+        json!({ "process_id": id, "lines": 100000 }),
+    )
+    .await;
+    let greedy_lines = greedy.lines().filter(|l| l.starts_with("line ")).count();
+    assert!(greedy_lines <= 200, "cap ignored: {greedy_lines} lines");
+    assert!(
+        greedy.contains("is the maximum"),
+        "the cap was applied silently: {greedy:?}"
+    );
+
+    // The character budget holds however few lines that turns out to be.
+    assert!(greedy.len() <= 9_000, "returned {} bytes", greedy.len());
+}
+
+/// A single enormous line is trimmed rather than returned whole — otherwise the
+/// line cap is trivially defeated by a build that prints one long line.
+#[tokio::test]
+async fn one_very_long_line_is_truncated_not_returned_entire() {
+    let s = server().await;
+
+    let (text, _) = call_tool(
+        &s.url,
+        "proc_start",
+        json!({ "command": "sh", "args": ["-c", "i=1; while [ $i -le 3000 ]; do printf xxxxx; i=$((i+1)); done; echo"] }),
+    )
+    .await;
+    let id = serde_json::from_str::<Value>(&text).unwrap()["process_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    call_tool(&s.url, "proc_wait", json!({ "process_id": id })).await;
+
+    let (out, _) = call_tool(
+        &s.url,
+        "proc_output",
+        json!({ "process_id": id, "lines": 200 }),
+    )
+    .await;
+    assert!(out.len() <= 9_000, "returned {} bytes", out.len());
+}

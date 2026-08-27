@@ -25,6 +25,11 @@ const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 /// detail; this is a receipt, not a transcript.
 const TOOL_RESULT_LINES: usize = 3;
 
+/// Tools that would let the agent run commands Forge cannot render. Mirrors the
+/// startup check in `forge-agent`; this one catches a surface that changed
+/// underneath us between releases of the CLI.
+const SHELL_TOOLS: &[&str] = &["Bash", "Task", "Workflow", "Skill"];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Conversation,
@@ -278,22 +283,27 @@ impl App {
                     return;
                 }
                 self.tool_surface_checked = true;
-                // The one invariant worth asserting at runtime: if a built-in
-                // tool ever appears here, the agent could act through a channel
-                // the terminal pane does not render, and the developer would
-                // stop being able to trust what they see.
-                let foreign: Vec<&String> = tools
+                // The one invariant worth asserting at runtime. Built-in
+                // editing tools are expected now — what must never appear is a
+                // way to run commands outside Forge's process manager, because
+                // that output would land in the model's context instead of on
+                // the developer's screen.
+                let shells: Vec<&String> = tools
                     .iter()
-                    .filter(|t| !t.starts_with("mcp__forge__"))
+                    .filter(|t| SHELL_TOOLS.contains(&t.as_str()))
                     .collect();
-                if foreign.is_empty() {
+                if shells.is_empty() {
+                    let forge = tools
+                        .iter()
+                        .filter(|t| t.starts_with("mcp__forge__"))
+                        .count();
                     self.conversation.push(Line::Note(format!(
-                        "{} Forge tools, no built-ins",
-                        tools.len()
+                        "{} built-in + {forge} Forge tools · no shell",
+                        tools.len() - forge
                     )));
                 } else {
                     self.conversation.push(Line::Note(format!(
-                        "WARNING: agent has tools Forge does not own: {foreign:?}"
+                        "WARNING: the agent has a shell ({shells:?}). It can run commands                          this pane will not show, and their output will cost you context."
                     )));
                 }
             }
@@ -856,6 +866,21 @@ pub fn summarise_call(name: &str, input: &serde_json::Value) -> String {
         "proc_signal" => format!("{} to {}", get("signal"), get("process_id")),
         "proc_input" => format!("type {:?} into {}", get("data"), get("process_id")),
         "proc_list" => "list processes".into(),
+
+        // Edits are auto-approved inside the workspace, so this line is the
+        // developer's only notice that a file changed. It has to say which
+        // file, and how much of it — the same reason the terminal pane exists.
+        "Edit" | "Write" | "NotebookEdit" => {
+            let path = short_path(get("file_path"));
+            match edit_size(input) {
+                Some(n) => format!("{path}  {n}"),
+                None => path,
+            }
+        }
+        "Read" => short_path(get("file_path")),
+        "WebFetch" => get("url").to_string(),
+        "WebSearch" => format!("search {:?}", get("query")),
+
         _ => {
             let id = get("process_id");
             if id.is_empty() {
@@ -864,6 +889,35 @@ pub fn summarise_call(name: &str, input: &serde_json::Value) -> String {
                 id.to_string()
             }
         }
+    }
+}
+
+/// The tail of a path, which is what identifies a file in a narrow pane.
+fn short_path(p: &str) -> String {
+    if p.is_empty() {
+        return "(no path)".into();
+    }
+    let parts: Vec<&str> = p.rsplit('/').take(3).collect();
+    let short: String = parts.into_iter().rev().collect::<Vec<_>>().join("/");
+    if short.len() < p.len() {
+        format!("…/{short}")
+    } else {
+        short
+    }
+}
+
+/// How much an edit changes, in the terms the tool's own arguments give us.
+fn edit_size(input: &serde_json::Value) -> Option<String> {
+    let lines = |k: &str| {
+        input
+            .get(k)
+            .and_then(|v| v.as_str())
+            .map(|s| s.lines().count())
+    };
+    match (lines("old_string"), lines("new_string")) {
+        (Some(old), Some(new)) => Some(format!("-{old} +{new}")),
+        // `Write` replaces the file outright; the count is the whole thing.
+        _ => lines("content").map(|n| format!("{n} lines")),
     }
 }
 
@@ -1114,29 +1168,99 @@ mod tests {
     }
 
     #[test]
-    fn a_tool_outside_forge_is_reported_loudly() {
-        let mut a = app();
-        a.on_agent_event(AgentEvent::Ready {
-            tools: vec!["mcp__forge__proc_start".into(), "Bash".into()],
-        });
-        let n = notes(&a);
-        assert!(
-            n.iter()
-                .any(|n| n.contains("WARNING") && n.contains("Bash")),
-            "{n:?}"
-        );
-    }
-
-    #[test]
     fn a_clean_tool_surface_is_reported_quietly() {
         let mut a = app();
         a.on_agent_event(AgentEvent::Ready {
             tools: vec![
+                "Read".into(),
+                "Edit".into(),
                 "mcp__forge__proc_start".into(),
                 "mcp__forge__proc_wait".into(),
             ],
         });
-        assert!(notes(&a).iter().any(|n| n == "2 Forge tools, no built-ins"));
+        assert!(
+            notes(&a)
+                .iter()
+                .any(|n| n == "2 built-in + 2 Forge tools · no shell"),
+            "{:?}",
+            notes(&a)
+        );
+    }
+
+    /// Editing tools are expected now. A *shell* is the thing that must never
+    /// appear: its output would go to the model's context, not to the pane.
+    #[test]
+    fn editing_tools_are_not_treated_as_foreign() {
+        let mut a = app();
+        a.on_agent_event(AgentEvent::Ready {
+            tools: vec!["Read".into(), "Edit".into(), "Write".into()],
+        });
+        assert!(
+            !notes(&a).iter().any(|n| n.contains("WARNING")),
+            "{:?}",
+            notes(&a)
+        );
+    }
+
+    #[test]
+    fn every_shell_tool_is_reported_loudly() {
+        for shell in ["Bash", "Task", "Workflow", "Skill"] {
+            let mut a = app();
+            a.on_agent_event(AgentEvent::Ready {
+                tools: vec!["Read".into(), shell.to_string()],
+            });
+            let n = notes(&a);
+            assert!(
+                n.iter().any(|x| x.contains("WARNING") && x.contains(shell)),
+                "{shell} passed unnoticed: {n:?}"
+            );
+        }
+    }
+
+    /// Edits are auto-approved inside the workspace, so the conversation line
+    /// is the developer's only notice that a file changed. It must name the
+    /// file and say how much moved.
+    #[test]
+    fn an_edit_says_which_file_and_how_much_changed() {
+        let mut a = app();
+        a.on_agent_event(AgentEvent::ToolCall {
+            id: "t1".into(),
+            name: "Edit".into(),
+            input: json!({
+                "file_path": "/home/dev/src/meta-foo/recipes-core/busybox_1.36.bb",
+                "old_string": "one\ntwo",
+                "new_string": "one\ntwo\nthree",
+            }),
+        });
+        match a.conversation.last() {
+            Some(Line::Tool {
+                name,
+                summary,
+                capability,
+            }) => {
+                assert_eq!(name, "Edit");
+                assert_eq!(*capability, Capability::Write);
+                assert!(summary.contains("busybox_1.36.bb"), "{summary}");
+                assert!(summary.contains("-2 +3"), "{summary}");
+            }
+            other => panic!("expected a tool line, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_whole_file_write_reports_its_size() {
+        let s = summarise_call(
+            "Write",
+            &json!({"file_path": "/tmp/a/b/new.rs", "content": "x\ny\nz"}),
+        );
+        assert!(s.contains("new.rs") && s.contains("3 lines"), "{s}");
+    }
+
+    #[test]
+    fn a_long_path_keeps_the_end_that_identifies_it() {
+        assert_eq!(short_path("/a/b/c/d/e/f.rs"), "…/d/e/f.rs");
+        assert_eq!(short_path("short.rs"), "short.rs");
+        assert_eq!(short_path(""), "(no path)");
     }
 
     #[tokio::test]

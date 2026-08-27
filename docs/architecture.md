@@ -205,8 +205,11 @@ Decision records:
 - [ADR-0001](decisions/0001-language-and-tui.md) — language and TUI framework
 - [ADR-0002](decisions/0002-claude-integration.md) — Claude integration
 - [ADR-0003](decisions/0003-pty-and-terminal.md) — PTY, signals, stream semantics
-- ADR-0004 — Permission model *(pending)*
-- ADR-0005 — Persistence *(pending)*
+- [ADR-0004](decisions/0004-tool-surface-and-permissions.md) — tool surface and
+  the permission gate *(superseded by ADR-0005)*
+- [ADR-0005](decisions/0005-a-coding-agent-without-a-shell.md) — a coding agent
+  without a shell
+- ADR-0006 — Persistence *(pending)*
 
 ### 6.1 Why the agent is a subprocess
 
@@ -238,15 +241,24 @@ Tool
 
 Permission  = READ | WRITE | EXECUTE | NETWORK | DESTRUCTIVE
 
-The concrete surface is seven process tools, and nothing else — see ADR-0004:
+The concrete surface is Claude's coding tools minus everything that can run a
+command, plus seven process tools — see ADR-0005:
+
+  Read                               READ
+  Edit / Write / NotebookEdit        WRITE
+  WebFetch / WebSearch               NETWORK
 
   proc_start   -> ProcessId          EXECUTE
   proc_list    -> [ProcessRecord]    READ
   proc_status  -> ProcessRecord      READ
-  proc_output  -> rendered screen    READ
+  proc_output  -> rendered screen    READ   (hard-capped)
   proc_wait    -> outcome | timeout  READ
   proc_input                         WRITE
   proc_signal                        DESTRUCTIVE
+
+No Bash, Task, Workflow or Skill. Those return command output into the model's
+context; proc_start returns an id and the bytes go to the developer's screen.
+Forge refuses to start if one is in the list.
 
 ProcessManager
   start(command, cwd, env, size)    -> ProcessId        # non-blocking
@@ -281,10 +293,16 @@ permission class, and `EXECUTE`/`DESTRUCTIVE` operations pass through an explici
 decision point before reaching the Process Manager. The user always sees what
 the agent is doing — visibility is a security property here, not just a UX one.
 
-Two details make this hold rather than merely intend to. The agent's tools act
+Three details make this hold rather than merely intend to. The agent's tools act
 on the *same* Process Manager the terminal pane reads from, so it has no private
-channel; and an unclassified tool is treated as `DESTRUCTIVE`, so forgetting to
-classify one fails closed. See ADR-0004.
+channel; an unclassified tool is treated as `DESTRUCTIVE`, so forgetting to
+classify one fails closed; and Forge refuses to start at all if a tool that runs
+commands is in the list.
+
+Writes are gated on path: an edit inside the workspace goes through and is shown
+in the conversation, an edit outside it asks. The gate covers every capability
+class including reads — asserted against the real CLI rather than assumed, since
+it is the CLI's behaviour and not Forge's. See ADR-0005.
 
 ## 9. Development-time note
 

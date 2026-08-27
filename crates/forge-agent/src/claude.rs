@@ -11,7 +11,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::mpsc;
 
-use crate::permission::{Capability, Decision};
+use crate::permission::{Capability, Decision, Policy, Verdict};
 use crate::protocol::{self, ContentBlock, Incoming};
 use crate::{Agent, AgentEvent, ApprovalRequest, SessionId};
 
@@ -38,9 +38,34 @@ pub struct ClaudeAgentConfig {
     pub mcp_url: Option<String>,
     pub system_prompt: Option<String>,
     pub session_id: Option<String>,
+    /// Built-in tools the agent may use. See [`DEFAULT_TOOLS`].
+    pub tools: Vec<String>,
     /// Capabilities granted for the session; `Destructive` always asks anyway.
     pub granted: Vec<Capability>,
 }
+
+/// The built-in tools Forge hands the agent.
+///
+/// The important entry is the one that is missing. `Bash` returns a command's
+/// output into the model's context, which is both how a forty-minute build
+/// becomes forty thousand tokens and how work happens where the terminal pane
+/// cannot see it. Forge replaces it with `proc_start`, which returns an id and
+/// sends the bytes to the developer's screen instead.
+///
+/// This build of the CLI ships no `Grep`/`Glob` either, so searching the tree
+/// also goes through `proc_start` — which means the developer watches that too.
+pub const DEFAULT_TOOLS: &[&str] = &[
+    "Read",
+    "Edit",
+    "Write",
+    "NotebookEdit",
+    "WebFetch",
+    "WebSearch",
+];
+
+/// Tools that run commands. None of them may ever be granted: each is a channel
+/// whose output the terminal pane cannot render.
+const SHELL_TOOLS: &[&str] = &["Bash", "Task", "Workflow", "Skill"];
 
 /// Which `claude` to run.
 ///
@@ -67,6 +92,7 @@ impl ClaudeAgentConfig {
             mcp_url: None,
             system_prompt: None,
             session_id: None,
+            tools: DEFAULT_TOOLS.iter().map(|s| s.to_string()).collect(),
             granted: vec![Capability::Read],
         }
     }
@@ -85,10 +111,11 @@ impl ClaudeAgentConfig {
             "--verbose".into(),
             // Required for token-level deltas.
             "--include-partial-messages".into(),
-            // Q1: removes all 24 built-ins. Without this the agent could run a
-            // build through Bash, and the terminal pane would never see it.
+            // Q1: an explicit subset of the 24 built-ins. `Bash` is not in it —
+            // with it the agent could run a build the terminal pane never sees,
+            // and pay for the output in context. See ADR-0005.
             "--tools".into(),
-            String::new(),
+            self.tools.join(","),
             // Q2: refuse the user's own MCP servers.
             "--strict-mcp-config".into(),
             "--disable-slash-commands".into(),
@@ -131,6 +158,21 @@ impl ClaudeAgentConfig {
                 );
             }
         }
+        // A shell tool would let the agent run a build whose output the pane
+        // cannot render and whose bytes land in the model's context instead.
+        // That is the product's central promise, so it is a startup assertion
+        // rather than a comment. See ADR-0005.
+        if let Some(i) = argv.iter().position(|a| a == "--tools") {
+            let listed = argv.get(i + 1).map(|s| s.as_str()).unwrap_or("");
+            for name in listed.split(',').map(str::trim) {
+                if SHELL_TOOLS.contains(&name) {
+                    bail!(
+                        "refusing to start: `{name}` runs commands outside Forge's process                          manager, so the terminal pane could not show them and their output                          would be charged to the model's context (see ADR-0005)"
+                    );
+                }
+            }
+        }
+
         // bypassPermissions is the one --permission-mode value that voids the gate.
         if let Some(i) = argv.iter().position(|a| a == "--permission-mode") {
             if argv.get(i + 1).map(|s| s.as_str()) == Some("bypassPermissions") {
@@ -202,7 +244,12 @@ impl ClaudeAgent {
         let (dec_tx, dec_rx) = mpsc::unbounded_channel();
         let (turn_tx, turn_rx) = mpsc::unbounded_channel();
 
-        Self::spawn_reader(stdout, ev_tx.clone(), dec_tx, cfg.granted.clone());
+        Self::spawn_reader(
+            stdout,
+            ev_tx.clone(),
+            dec_tx,
+            Policy::new(cfg.cwd.clone(), cfg.granted.clone()),
+        );
         Self::spawn_stderr(stderr, ev_tx);
         Self::spawn_writer(stdin, dec_rx, turn_rx);
 
@@ -219,7 +266,7 @@ impl ClaudeAgent {
         stdout: tokio::process::ChildStdout,
         events: mpsc::UnboundedSender<AgentEvent>,
         decisions: mpsc::UnboundedSender<(String, Decision)>,
-        granted: Vec<Capability>,
+        policy: Policy,
     ) {
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
@@ -268,9 +315,10 @@ impl ClaudeAgent {
                     } => {
                         let cap = Capability::of_tool(&tool_name);
 
-                        // Auto-approve only read-ish capabilities the session
-                        // granted. Destructive never qualifies, however granted.
-                        if cap.auto_approvable(&granted) {
+                        // The whole rule lives in `Policy`: reads and grants go
+                        // through, edits inside the workspace go through, and
+                        // Destructive never does however it was granted.
+                        if policy.decide(&tool_name, &input) == Verdict::Allow {
                             let _ = decisions.send((request_id, Decision::Allow));
                             continue;
                         }

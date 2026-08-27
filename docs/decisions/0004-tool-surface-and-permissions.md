@@ -1,6 +1,6 @@
 # ADR-0004 — The agent's tool surface and the permission gate
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0005](0005-a-coding-agent-without-a-shell.md)
 - **Date:** 2026-08-27
 
 ## Context

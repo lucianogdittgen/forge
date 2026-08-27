@@ -100,20 +100,26 @@ fn system_prompt(cwd: &std::path::Path) -> String {
         "You are the agent inside Forge, a terminal workbench. The developer is working at \
          {cwd} and is looking at a live terminal pane next to this conversation.\n\
          \n\
-         Every process you start with proc_start appears in that pane immediately and streams \
-         there in real time, exactly as if the developer had typed the command. They can watch \
-         it, scroll it, type into it and press Ctrl-C on it while you work.\n\
+         You can read and edit files normally. What you do not have is a shell: there is no \
+         Bash tool, and running a program is always proc_start.\n\
          \n\
-         Because of that:\n\
-         - Do not relay or summarise output they can already see. Say what you concluded from \
-           it, not what it said.\n\
+         Everything you start with proc_start appears in that pane immediately and streams \
+         there in real time, exactly as if the developer had typed the command. They can watch \
+         it, scroll it, type into it and press Ctrl-C on it while you work. Searching the tree \
+         is a command too — use proc_start with grep, rg or find.\n\
+         \n\
+         Because they can already see it:\n\
+         - Do not relay or summarise output they are watching. Say what you concluded from it, \
+           not what it said.\n\
          - proc_start returns an id, not a result. A build that takes forty minutes is normal. \
            Use proc_wait when you need the outcome, and keep working when you do not.\n\
-         - Read proc_output when you need detail; it is rendered as the developer sees it.\n\
+         - proc_wait's exit code is the cheap way to learn whether something worked. Prefer it.\n\
+         - proc_output costs the developer context and is hard-capped. Read it to diagnose a \
+           specific failure, never to follow a build along. If you need more than the cap, run \
+           a narrower command rather than asking for more lines.\n\
          \n\
-         The proc_* tools are your only tools. You cannot read or edit files, and there is no \
-         general shell tool — running a program is always something the developer can see. \
-         Anything that could destroy work, such as signalling a process, needs their approval \
+         Edits inside {cwd} go through without interrupting them. Anything outside it, and \
+         anything that could destroy work such as signalling a process, needs their approval \
          and they may refuse; treat a refusal as a decision, not an obstacle.",
         cwd = cwd.display()
     )
@@ -133,9 +139,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "spawns the real claude CLI"]
     async fn the_agent_can_start_a_process_the_developer_would_see() {
-        let dir = std::env::temp_dir();
+        let dir = std::env::temp_dir().join("forge-e2e-proc");
+        std::fs::create_dir_all(&dir).unwrap();
         let pm = ProcessManager::new();
-        let mut session = AgentSession::start(pm.clone(), dir).await.unwrap();
+        let mut session = AgentSession::start(pm.clone(), dir.clone()).await.unwrap();
 
         session.send("Run the command `echo forge-e2e` and tell me nothing else.");
 
@@ -163,11 +170,22 @@ mod tests {
             }
         }
 
-        assert!(!tools.is_empty(), "the agent never reported a tool surface");
+        // The surface is a coding agent's, minus any way to run a command that
+        // the pane could not show.
         assert!(
-            tools.iter().all(|t| t.starts_with("mcp__forge__")),
-            "the agent has tools Forge does not own: {tools:?}"
+            tools.contains(&"Edit".to_string()),
+            "no edit tool: {tools:?}"
         );
+        assert!(
+            tools.contains(&"Read".to_string()),
+            "no read tool: {tools:?}"
+        );
+        for shell in ["Bash", "Task", "Workflow", "Skill"] {
+            assert!(
+                !tools.contains(&shell.to_string()),
+                "{shell} leaked in: {tools:?}"
+            );
+        }
         assert!(started, "the agent never called proc_start");
 
         // The point of the product: the process exists in the manager the
@@ -179,5 +197,82 @@ mod tests {
                     || r.args.iter().any(|a| a.contains("forge-e2e"))),
             "nothing reached the process manager: {seen:?}"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The edit gate, end to end: inside the workspace it must not interrupt,
+    /// outside it must. Auto-approval is only safe if "outside" really asks.
+    #[tokio::test]
+    #[ignore = "spawns the real claude CLI"]
+    async fn edits_inside_the_workspace_do_not_interrupt_but_outside_ones_do() {
+        let dir = std::env::temp_dir().join("forge-e2e-edit");
+        std::fs::create_dir_all(&dir).unwrap();
+        let inside = dir.join("inside.txt");
+        std::fs::write(&inside, "before\n").unwrap();
+
+        let outside = std::env::temp_dir().join("forge-e2e-outside.txt");
+        std::fs::write(&outside, "before\n").unwrap();
+
+        let pm = ProcessManager::new();
+        let mut session = AgentSession::start(pm, dir.clone()).await.unwrap();
+        session.send(format!(
+            "Use Edit to change `before` to `after` in {}, then use Edit to do exactly \
+             the same in {}. No commentary.",
+            inside.display(),
+            outside.display()
+        ));
+
+        let mut gated: Vec<String> = Vec::new();
+        let mut edited: Vec<String> = Vec::new();
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+        loop {
+            let ev = tokio::time::timeout_at(deadline, session.events.recv())
+                .await
+                .expect("timed out");
+            let Some(ev) = ev else { break };
+            match ev {
+                AgentEvent::ToolCall { name, input, .. } => {
+                    if name == "Edit" {
+                        edited.push(
+                            input
+                                .get("file_path")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                        );
+                    }
+                }
+                AgentEvent::ApprovalRequested(req) => {
+                    gated.push(
+                        req.input
+                            .get("file_path")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                    );
+                    req.respond(forge_agent::Decision::Allow);
+                }
+                AgentEvent::TurnFinished { .. } => break,
+                _ => {}
+            }
+        }
+
+        eprintln!("edited: {edited:?}\ngated:  {gated:?}");
+        let inside_s = inside.to_string_lossy().to_string();
+        let outside_s = outside.to_string_lossy().to_string();
+
+        assert!(edited.contains(&inside_s), "never edited inside");
+        assert!(
+            !gated.contains(&inside_s),
+            "an edit inside the workspace interrupted the developer: {gated:?}"
+        );
+        assert!(
+            gated.contains(&outside_s),
+            "an edit OUTSIDE the workspace went through unasked: gated={gated:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&outside);
     }
 }

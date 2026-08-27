@@ -23,7 +23,18 @@ use serde_json::{json, Value};
 /// A width matters: output is replayed through the emulator, and a column
 /// count that disagrees with the child's would re-wrap its lines.
 const AGENT_VIEW_COLS: u16 = 200;
-const DEFAULT_TAIL_ROWS: u16 = 120;
+
+/// How much of a process's output `proc_output` will return.
+///
+/// Deliberately small. The developer is already watching this output at full
+/// fidelity; the agent's copy exists to diagnose a specific failure, not to
+/// mirror the build. A generous cap is not a convenience here — 1000 lines at
+/// 200 columns is on the order of ten thousand tokens, charged every time the
+/// model glances at a build. See ADR-0005.
+const DEFAULT_TAIL_ROWS: u16 = 40;
+const MAX_TAIL_ROWS: u16 = 200;
+/// Second cap, because long lines make the row count a poor proxy for cost.
+const MAX_TAIL_CHARS: usize = 8_000;
 
 /// How long `proc_wait` will block by default. Bounded so a wait on a process
 /// that never exits returns a useful "still running" rather than hanging the
@@ -81,12 +92,15 @@ pub fn descriptors() -> Vec<Value> {
             "description":
                 "The tail of a process's output, rendered exactly as it appears on the developer's \
                  screen: progress lines that rewrite themselves with carriage returns are collapsed, \
-                 and colour codes are stripped. Safe to call while the process is still running.",
+                 and colour codes are stripped. Safe to call while the process is still running. \
+                 Deliberately small and hard-capped — the developer is already watching this output \
+                 in full, so read it to diagnose a specific failure, not to follow along. For \
+                 whether a command worked, proc_wait's exit code is cheaper and enough.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "process_id": { "type": "string" },
-                    "lines": { "type": "integer", "description": "How many trailing lines to return (default 120, max 1000)." }
+                    "lines": { "type": "integer", "description": "How many trailing lines to return (default 40, max 200)." }
                 },
                 "required": ["process_id"]
             }
@@ -262,11 +276,11 @@ fn proc_output(pm: &ProcessManager, args: &Value) -> ToolOutcome {
         Ok(id) => id,
         Err(e) => return ToolOutcome::err(e),
     };
-    let rows = args
+    let asked = args
         .get("lines")
         .and_then(|v| v.as_u64())
-        .unwrap_or(DEFAULT_TAIL_ROWS as u64)
-        .clamp(1, 1000) as u16;
+        .unwrap_or(DEFAULT_TAIL_ROWS as u64);
+    let rows = asked.clamp(1, MAX_TAIL_ROWS as u64) as u16;
 
     let cols = pm
         .get(id)
@@ -275,18 +289,62 @@ fn proc_output(pm: &ProcessManager, args: &Value) -> ToolOutcome {
 
     match pm.output_snapshot(id) {
         Ok((bytes, dropped)) => {
-            let text = forge_terminal::render_transcript(&bytes, rows, cols);
-            let mut out = String::new();
+            // Render a generous window first so the total is known, then trim.
+            // Reporting what was withheld lets the model narrow its next call
+            // instead of asking again blindly and paying twice.
+            let full = forge_terminal::render_transcript(&bytes, MAX_TAIL_ROWS, cols);
+            let all: Vec<&str> = full.lines().collect();
+            let (text, shown, total) = tail_lines(&all, rows as usize);
+
+            let mut notes = Vec::new();
             if dropped > 0 {
                 // Never hand back a silently truncated transcript.
-                out.push_str(&format!(
-                    "[{dropped} earlier bytes were dropped from Forge's retained buffer]\n"
+                notes.push(format!(
+                    "{dropped} earlier bytes were dropped from Forge's retained buffer"
                 ));
+            }
+            if shown < total {
+                notes.push(format!("showing the last {shown} of {total} lines"));
+            }
+            if asked > MAX_TAIL_ROWS as u64 {
+                notes.push(format!(
+                    "asked for {asked} lines; {MAX_TAIL_ROWS} is the maximum. \
+                     The developer can see the whole thing on their screen"
+                ));
+            }
+
+            let mut out = String::new();
+            if !notes.is_empty() {
+                out.push_str(&format!("[{}]\n", notes.join("; ")));
             }
             out.push_str(&text);
             ToolOutcome::ok(out)
         }
         Err(e) => ToolOutcome::err(e.to_string()),
+    }
+}
+
+/// The last `rows` lines, further trimmed so the result cannot exceed
+/// [`MAX_TAIL_CHARS`]. Returns the text, how many lines it contains, and how
+/// many there were in total.
+fn tail_lines(all: &[&str], rows: usize) -> (String, usize, usize) {
+    let total = all.len();
+    let mut start = total.saturating_sub(rows);
+
+    // Drop lines from the front until the character budget is met. A single
+    // enormous line is truncated rather than dropped, so the caller always gets
+    // something back.
+    loop {
+        let text = all[start..].join("\n");
+        if text.len() <= MAX_TAIL_CHARS {
+            return (text, total - start, total);
+        }
+        if start + 1 >= total {
+            let mut t: String = text.chars().take(MAX_TAIL_CHARS).collect();
+            t.push_str("\n[line truncated]");
+            return (t, total - start, total);
+        }
+        start += 1;
     }
 }
 

@@ -9,7 +9,7 @@ pub mod claude;
 pub mod permission;
 pub mod protocol;
 
-pub use permission::{Capability, Decision};
+pub use permission::{Capability, Decision, Policy, Verdict};
 
 use std::pin::Pin;
 
