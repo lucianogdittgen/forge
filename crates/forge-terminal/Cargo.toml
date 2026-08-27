@@ -1,0 +1,11 @@
+[package]
+name = "forge-terminal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+forge-process = { version = "0.1.0", path = "../forge-process" }
+vt100.workspace = true
