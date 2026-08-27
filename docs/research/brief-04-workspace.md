@@ -44,7 +44,7 @@ of a generic design.
 6. Persistence. What must survive a restart: conversation, process list,
    terminal scrollback, workspace metadata. What is genuinely reattachable
    (a PTY child cannot outlive its parent unless re-parented — is that true?
-   how do tmux/screen/herdr/dtach do it?). Recommend a minimal v1 that does not
+   how do tmux/screen/dtach do it?). Recommend a minimal v1 that does not
    over-engineer but does not paint us into a corner. Sketch the storage format
    and on-disk layout.
 

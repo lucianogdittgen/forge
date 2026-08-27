@@ -25,6 +25,12 @@ pub struct SessionId(pub String);
 /// produce the same events without the UI changing.
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
+    /// The agent process is up, reporting the exact tool surface it was given.
+    ///
+    /// Forge asserts this contains only its own tools: an unexpected built-in
+    /// here means the agent could act through a channel Forge does not own, and
+    /// the terminal pane would never see it. Repeats each turn.
+    Ready { tools: Vec<String> },
     /// Incremental assistant text for live rendering.
     TextDelta(String),
     /// A complete assistant message.

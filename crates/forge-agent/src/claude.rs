@@ -194,7 +194,9 @@ impl ClaudeAgent {
             while let Ok(Some(line)) = lines.next_line().await {
                 match protocol::parse_line(&line) {
                     // Repeats every turn; not a handshake.
-                    Incoming::Init { .. } => {}
+                    Incoming::Init { tools, .. } => {
+                        let _ = events.send(AgentEvent::Ready { tools });
+                    }
 
                     Incoming::Assistant { content } | Incoming::User { content } => {
                         for b in content {

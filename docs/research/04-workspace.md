@@ -970,9 +970,9 @@ controlling terminal (double-fork for the portable guarantee that it can never r
 one), **owns the PTY masters**, and treats the attached client as a disposable proxy over a
 Unix socket. dtach's man page is explicit: "when the detach character is pressed, dtach
 detaches from the session and exits, and the process running in the session is unaffected."
-The [herdr docs](https://herdr.dev/docs/persistence-remote/) describe the same split —
-"Herdr keeps panes running in a background server. Your terminal client can detach and
-reconnect later" — with a `--no-session` flag that collapses the split for debugging.
+Modern terminal multiplexers describe the same split: panes keep running in a background
+server, and the terminal client can detach and reconnect later, usually with an escape
+hatch that collapses the split into a single process for debugging.
 
 **Corollaries Forge must respect:**
 * A process is only reattachable if a *Forge-owned* process outlives the TUI. Reparenting to

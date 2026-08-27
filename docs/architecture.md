@@ -184,13 +184,38 @@ long build cannot blow up the agent's context.
 
 ## 6. Technology selection
 
-**Pending.** To be filled from `docs/research/` and fixed in ADRs:
+**Rust**, chosen because the terminal pane is the product and it is the one
+component whose quality is language-determined. Measured on the same workload,
+Python retained 10% of raw PTY throughput against Rust's 92%, and the only
+off-the-shelf Python emulator cannot do alternate screen at all — `vim` and
+`htop` corrupt the pane permanently. Full evidence in ADR-0001.
 
-- ADR-0001 — Implementation language and TUI framework
-- ADR-0002 — Claude integration architecture
-- ADR-0003 — PTY and terminal-emulation stack
-- ADR-0004 — Permission model
-- ADR-0005 — Persistence
+| Layer | Choice |
+|---|---|
+| TUI | `ratatui` 0.30 |
+| Terminal widget | `tui-term` 0.3 |
+| VT emulator | `vt100` 0.16, behind a swappable `Emulator` trait |
+| PTY | `portable-pty` 0.9 |
+| Signals | `nix` |
+| Async | `tokio` |
+| Agent | the `claude` CLI, driven directly over stream-JSON |
+
+Decision records:
+
+- [ADR-0001](decisions/0001-language-and-tui.md) — language and TUI framework
+- [ADR-0002](decisions/0002-claude-integration.md) — Claude integration
+- [ADR-0003](decisions/0003-pty-and-terminal.md) — PTY, signals, stream semantics
+- ADR-0004 — Permission model *(pending)*
+- ADR-0005 — Persistence *(pending)*
+
+### 6.1 Why the agent is a subprocess
+
+The brief asked not to wrap the `claude` executable without compelling reason.
+Investigation dissolved the premise: **the Claude Agent SDK is itself a
+subprocess wrapper** around that same binary, bundling a 250 MB copy of it
+inside its Python wheel. There is no wrap/don't-wrap choice — only whether an
+extra language runtime is added to obtain a typed adapter over the same pipe.
+Forge speaks the protocol directly. See ADR-0002.
 
 ## 7. Ports (language-neutral)
 
