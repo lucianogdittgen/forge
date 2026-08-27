@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use forge_process::{ProcessEvent, ProcessManager, ProcessSpec, ProcessState};
+use tokio::sync::broadcast;
 
 /// Collect output until the process reaches a terminal state, or time out.
 async fn run_to_exit(
@@ -27,7 +28,12 @@ async fn run_to_exit(
             Ok(Ok(ProcessEvent::Output(b))) => out.push_str(&String::from_utf8_lossy(&b)),
             Ok(Ok(ProcessEvent::Exited { code, .. })) => return (out, code),
             Ok(Ok(ProcessEvent::StateChanged(_))) => {}
-            Ok(Err(_)) | Err(_) => return (out, None),
+            // A burst can outrun a subscriber; the manager reports that as
+            // `Lagged` rather than growing without bound. Keep reading — the
+            // stream is intact from here, and bailing here made this helper
+            // flaky under load.
+            Ok(Err(broadcast::error::RecvError::Lagged(_))) => {}
+            Ok(Err(broadcast::error::RecvError::Closed)) | Err(_) => return (out, None),
         }
     }
 }
@@ -287,4 +293,58 @@ async fn carriage_return_progress_streams_through() {
         "carriage returns must survive to the emulator"
     );
     assert!(out.contains("progress:"), "output was: {out:?}");
+}
+
+/// `Exited` must be the last event, and everything the child wrote must have
+/// arrived before it.
+///
+/// The reaper and the PTY reader are separate threads: `child.wait()` can
+/// return while the last bytes are still in the pty. A subscriber that stops at
+/// `Exited` — which is every reasonable subscriber, including `proc_wait`
+/// followed by `proc_output` — would silently lose the tail of a build.
+///
+/// The losing case is a child that writes once and exits immediately, and it
+/// only loses under scheduling pressure — so this starts sixteen at a time, and
+/// relies on the rest of the suite running alongside it. Measured against a
+/// build with the ordering removed: two failures in six runs of the file, none
+/// in six with it restored. Probabilistic, guarding a real race; in isolation on
+/// an idle machine the reader wins and it proves nothing.
+#[tokio::test]
+async fn output_is_complete_before_exited_is_published() {
+    let pm = ProcessManager::new();
+
+    for round in 0..8 {
+        // Attach immediately, before draining any of them: `attach` only sees
+        // future events, so batching the starts would miss `Exited` outright
+        // and test nothing. The pressure comes from sixteen reader and reaper
+        // threads racing while these are collected.
+        let attached: Vec<_> = (0..16)
+            .map(|_| {
+                let id = pm
+                    .start(ProcessSpec::new("sh").arg("-c").arg("echo THE-LAST-LINE"))
+                    .expect("start");
+                let (snapshot, rx) = pm.attach(id).expect("attach");
+                (snapshot, rx)
+            })
+            .collect();
+
+        for (snapshot, mut rx) in attached {
+            let mut out = String::from_utf8_lossy(&snapshot).to_string();
+            loop {
+                match tokio::time::timeout(Duration::from_secs(10), rx.recv()).await {
+                    Ok(Ok(ProcessEvent::Output(b))) => out.push_str(&String::from_utf8_lossy(&b)),
+                    Ok(Ok(ProcessEvent::Exited { .. })) => break,
+                    Ok(Ok(ProcessEvent::StateChanged(_))) => {}
+                    Ok(Err(broadcast::error::RecvError::Lagged(_))) => {}
+                    Ok(Err(broadcast::error::RecvError::Closed)) | Err(_) => {
+                        panic!("round {round}: stream ended without Exited")
+                    }
+                }
+            }
+            assert!(
+                out.contains("THE-LAST-LINE"),
+                "round {round}: the tail was lost; Exited outran the reader"
+            );
+        }
+    }
 }

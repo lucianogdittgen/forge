@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -178,6 +178,14 @@ struct ProcessEntry {
     events: broadcast::Sender<ProcessEvent>,
 }
 
+/// Signalled by the PTY reader thread when the master reaches EOF.
+///
+/// The reaper and the reader are separate threads, and `child.wait()` can
+/// return before the reader has drained the last bytes out of the PTY. Without
+/// this latch a subscriber that stops at `Exited` — which is every reasonable
+/// subscriber — can lose the tail of a build's output.
+type ReaderEof = Arc<(Mutex<bool>, Condvar)>;
+
 /// Owns every process Forge has started.
 #[derive(Clone)]
 pub struct ProcessManager {
@@ -315,8 +323,9 @@ impl ProcessManager {
         );
         let _ = tx.send(ProcessEvent::StateChanged(ProcessState::Running));
 
-        self.spawn_reader(id, reader, tx.clone());
-        self.spawn_waiter(id, tx);
+        let eof: ReaderEof = Arc::new((Mutex::new(false), Condvar::new()));
+        self.spawn_reader(id, reader, tx.clone(), Arc::clone(&eof));
+        self.spawn_waiter(id, tx, eof);
 
         Ok(id)
     }
@@ -332,6 +341,7 @@ impl ProcessManager {
         id: ProcessId,
         mut reader: Box<dyn Read + Send>,
         tx: broadcast::Sender<ProcessEvent>,
+        eof: ReaderEof,
     ) {
         let inner = Arc::clone(&self.inner);
         let cap = self.buffer_capacity;
@@ -362,12 +372,18 @@ impl ProcessManager {
                         Err(_) => break,
                     }
                 }
+                // Every byte the child produced has now been buffered and
+                // broadcast. Release the reaper so `Exited` is genuinely the
+                // last event a subscriber sees.
+                let (lock, cv) = &*eof;
+                *lock.lock().unwrap() = true;
+                cv.notify_all();
             })
             .expect("spawn pty reader thread");
     }
 
     /// Reap the child and publish its exit exactly once.
-    fn spawn_waiter(&self, id: ProcessId, tx: broadcast::Sender<ProcessEvent>) {
+    fn spawn_waiter(&self, id: ProcessId, tx: broadcast::Sender<ProcessEvent>, eof: ReaderEof) {
         let inner = Arc::clone(&self.inner);
         std::thread::Builder::new()
             .name(format!("forge-pty-wait-{}", id.0))
@@ -405,6 +421,27 @@ impl ProcessManager {
                 entry.master = None;
                 entry.writer = None;
                 drop(g);
+
+                // The record already reads as terminal, so anything polling
+                // `get()` is unaffected. Only publication waits — for the
+                // reader to drain the PTY, so no output arrives after `Exited`.
+                //
+                // Bounded, because EOF needs *every* slave fd closed: a
+                // grandchild that outlives its parent while holding the
+                // terminal would otherwise suppress the exit event forever.
+                // Normally this returns in microseconds.
+                let (lock, cv) = &*eof;
+                let mut done = lock.lock().unwrap();
+                while !*done {
+                    let (g, timed_out) = cv
+                        .wait_timeout(done, Duration::from_secs(2))
+                        .expect("reader eof latch");
+                    done = g;
+                    if timed_out.timed_out() {
+                        break;
+                    }
+                }
+                drop(done);
 
                 let _ = tx.send(ProcessEvent::StateChanged(final_state));
                 let _ = tx.send(ProcessEvent::Exited { code, signal });
