@@ -2,7 +2,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use forge_process::{ProcessManager, ProcessSpec};
-use forge_tui::{PaneAction, TerminalPane, keys};
+use forge_tui::{keys, PaneAction, TerminalPane};
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -23,15 +23,21 @@ fn control_letters_map_to_their_control_codes() {
     assert_eq!(keys::encode(ctrl('a')), Some(vec![0x01]));
     assert_eq!(keys::encode(ctrl('d')), Some(vec![0x04])); // EOF
     assert_eq!(keys::encode(ctrl('z')), Some(vec![0x1a])); // suspend
-    // Case must not matter.
+                                                           // Case must not matter.
     assert_eq!(keys::encode(ctrl('C')), Some(vec![0x03]));
 }
 
 #[test]
 fn ordinary_and_unicode_characters_pass_through_as_utf8() {
     assert_eq!(keys::encode(key(KeyCode::Char('x'))), Some(b"x".to_vec()));
-    assert_eq!(keys::encode(key(KeyCode::Char('é'))), Some("é".as_bytes().to_vec()));
-    assert_eq!(keys::encode(key(KeyCode::Char('你'))), Some("你".as_bytes().to_vec()));
+    assert_eq!(
+        keys::encode(key(KeyCode::Char('é'))),
+        Some("é".as_bytes().to_vec())
+    );
+    assert_eq!(
+        keys::encode(key(KeyCode::Char('你'))),
+        Some("你".as_bytes().to_vec())
+    );
 }
 
 #[test]
@@ -88,8 +94,17 @@ fn focused_pane_consumes_every_key() {
     let mut pane = TerminalPane::new(24, 80);
     pane.set_focus(true);
 
-    for k in [ctrl('c'), ctrl('d'), key(KeyCode::Char('q')), key(KeyCode::Tab)] {
-        assert_eq!(pane.handle_key(&pm, k), PaneAction::Consumed, "key {k:?} escaped the pane");
+    for k in [
+        ctrl('c'),
+        ctrl('d'),
+        key(KeyCode::Char('q')),
+        key(KeyCode::Tab),
+    ] {
+        assert_eq!(
+            pane.handle_key(&pm, k),
+            PaneAction::Consumed,
+            "key {k:?} escaped the pane"
+        );
     }
 }
 
@@ -120,7 +135,10 @@ fn slow_second_escape_does_not_release_focus() {
     let mut pane = TerminalPane::new(24, 80);
     pane.set_focus(true);
 
-    assert_eq!(pane.handle_key(&pm, key(KeyCode::Esc)), PaneAction::Consumed);
+    assert_eq!(
+        pane.handle_key(&pm, key(KeyCode::Esc)),
+        PaneAction::Consumed
+    );
     std::thread::sleep(std::time::Duration::from_millis(500));
     assert_eq!(
         pane.handle_key(&pm, key(KeyCode::Esc)),
@@ -150,7 +168,11 @@ fn intervening_key_resets_the_escape_gesture() {
 async fn keys_reach_the_attached_process() {
     let pm = ProcessManager::new();
     let id = pm
-        .start(ProcessSpec::new("sh").arg("-c").arg("read line; echo saw:$line"))
+        .start(
+            ProcessSpec::new("sh")
+                .arg("-c")
+                .arg("read line; echo saw:$line"),
+        )
         .expect("start");
 
     let mut pane = TerminalPane::new(24, 80);
@@ -167,4 +189,46 @@ async fn keys_reach_the_attached_process() {
     let (out, _) = pm.output_snapshot(id).expect("snapshot");
     let text = String::from_utf8_lossy(&out);
     assert!(text.contains("saw:hi"), "process saw: {text:?}");
+}
+
+/// Tab and Shift-Tab must reach the child, not be eaten as Forge shortcuts.
+///
+/// A full-screen program in the pane may well bind them — Claude Code uses Tab
+/// and Shift-Tab itself — and a swallowed Tab is worse than a stolen one,
+/// because it looks like the program simply ignored the key.
+#[test]
+fn tab_and_shift_tab_have_a_terminal_encoding() {
+    assert_eq!(keys::encode(key(KeyCode::Tab)), Some(vec![b'\t']));
+    assert_eq!(
+        keys::encode(key(KeyCode::BackTab)),
+        Some(b"\x1b[Z".to_vec())
+    );
+}
+
+#[tokio::test]
+async fn tab_reaches_the_attached_process() {
+    let pm = ProcessManager::new();
+    let id = pm
+        .start(
+            ProcessSpec::new("sh")
+                .arg("-c")
+                // `read -r` keeps the tab intact; od makes it visible.
+                .arg("read -r l; printf '%s' \"$l\" | od -c"),
+        )
+        .expect("start");
+
+    let mut pane = TerminalPane::new(24, 80);
+    pane.attach(id);
+    pane.set_focus(true);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    pane.handle_key(&pm, key(KeyCode::Char('a')));
+    pane.handle_key(&pm, key(KeyCode::Tab));
+    pane.handle_key(&pm, key(KeyCode::Char('b')));
+    pane.handle_key(&pm, key(KeyCode::Enter));
+
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    let (out, _) = pm.output_snapshot(id).expect("snapshot");
+    let text = String::from_utf8_lossy(&out);
+    assert!(text.contains("\\t"), "the child never saw a tab: {text:?}");
 }

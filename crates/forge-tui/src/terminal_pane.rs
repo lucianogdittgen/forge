@@ -166,3 +166,18 @@ impl TerminalPane {
         frame.render_widget(pseudo, area);
     }
 }
+
+impl TerminalPane {
+    /// Point the pane at a different process, discarding the old screen.
+    ///
+    /// Reusing the emulator across processes would leave the previous child's
+    /// cursor position, colours and alternate-screen flag in place, which shows
+    /// up as a corrupt first frame. Cheap enough to do on every switch.
+    pub fn switch_to(&mut self, id: ProcessId) {
+        let (rows, cols) = self.term.size();
+        self.term = Vt100Terminal::new(rows, cols, 10_000);
+        self.scroll_offset = 0;
+        self.last_escape = None;
+        self.process = Some(id);
+    }
+}

@@ -73,7 +73,11 @@ fn sgr_colour_and_attributes_are_parsed() {
     let cell = t.screen().cell(0, 0).expect("cell 0,0");
     assert_eq!(cell.contents(), "R");
     assert!(cell.bold(), "bold attribute lost");
-    assert_eq!(cell.fgcolor(), vt100::Color::Idx(1), "foreground colour lost");
+    assert_eq!(
+        cell.fgcolor(),
+        vt100::Color::Idx(1),
+        "foreground colour lost"
+    );
 }
 
 /// Double-width characters must occupy two cells.
@@ -100,8 +104,14 @@ fn cursor_addressing_and_erase_work() {
     t.flush();
 
     let v = t.visible_text();
-    assert!(v[0].trim().is_empty(), "erase-to-end should have cleared row 0");
-    assert!(v[1].trim().is_empty(), "erase-to-end should have cleared row 1");
+    assert!(
+        v[0].trim().is_empty(),
+        "erase-to-end should have cleared row 0"
+    );
+    assert!(
+        v[1].trim().is_empty(),
+        "erase-to-end should have cleared row 1"
+    );
 }
 
 #[test]
@@ -120,9 +130,15 @@ fn queue_defers_parsing_until_flush() {
     let mut t = Vt100Terminal::new(10, 40, 100);
     t.queue(b"deferred");
     // Not parsed yet, so the screen is still blank.
-    assert!(t.visible_text()[0].trim().is_empty(), "queue must not parse immediately");
+    assert!(
+        t.visible_text()[0].trim().is_empty(),
+        "queue must not parse immediately"
+    );
     t.flush();
-    assert!(t.visible_text()[0].starts_with("deferred"), "flush must parse queued bytes");
+    assert!(
+        t.visible_text()[0].starts_with("deferred"),
+        "flush must parse queued bytes"
+    );
 }
 
 /// A large burst forces a flush rather than waiting for the frame clock.
@@ -149,4 +165,38 @@ fn screen_state_is_bounded_under_heavy_output() {
         "should be showing the most recent output, got {:?}",
         t.visible_text()
     );
+}
+
+#[test]
+fn transcript_collapses_carriage_return_progress() {
+    // The point of rendering through the emulator: 400 progress writes are one
+    // line to the agent, exactly as they are one line to the developer.
+    let mut b = Vec::new();
+    for i in 1..=400 {
+        b.extend_from_slice(format!("\rProgress: {i}/400").as_bytes());
+    }
+    let text = forge_terminal::render_transcript(&b, 200, 80);
+    assert_eq!(text, "Progress: 400/400");
+}
+
+#[test]
+fn transcript_keeps_ordinary_lines_and_strips_colour() {
+    let b = b"\x1b[32mbuilding\x1b[0m\r\nlinking\r\ndone\r\n";
+    let text = forge_terminal::render_transcript(b, 200, 80);
+    assert_eq!(text, "building\nlinking\ndone");
+}
+
+#[test]
+fn transcript_is_bounded_to_a_tail() {
+    let mut b = Vec::new();
+    for i in 0..500 {
+        b.extend_from_slice(format!("line {i}\r\n").as_bytes());
+    }
+    let text = forge_terminal::render_transcript(&b, 10, 80);
+    let lines: Vec<&str> = text.lines().collect();
+    // Nine, not ten: the final "\r\n" left the cursor on a blank row, and a
+    // trailing blank row is padding rather than output.
+    assert_eq!(lines.len(), 9, "must return only the tail");
+    assert_eq!(*lines.last().unwrap(), "line 499");
+    assert_eq!(lines[0], "line 491");
 }

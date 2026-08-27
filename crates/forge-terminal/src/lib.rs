@@ -120,3 +120,37 @@ impl Emulator for Vt100Terminal {
             .collect()
     }
 }
+
+/// Render a raw byte stream as the text a developer would see on screen.
+///
+/// The agent must be given the *same* collapsed view the terminal pane shows,
+/// not the raw stream. BitBake, ninja and cargo rewrite one status line with
+/// carriage returns; handing the agent those bytes would spend its context on
+/// thousands of near-identical lines that never existed on screen. Running the
+/// bytes through the emulator first makes "what the agent read" and "what the
+/// developer saw" the same thing.
+///
+/// `rows` bounds the result to a tail: the last `rows` lines of the transcript,
+/// which is what a question like "how is the build going?" actually needs.
+/// Trailing blank rows are trimmed, so a short-lived process does not return a
+/// screen of padding.
+pub fn render_transcript(bytes: &[u8], rows: u16, cols: u16) -> String {
+    let rows = rows.clamp(1, 1000);
+    let cols = cols.clamp(20, 500);
+    let mut parser = vt100::Parser::new(rows, cols, 0);
+    parser.process(bytes);
+    let screen = parser.screen();
+
+    let mut lines: Vec<String> = (0..rows)
+        .map(|r| {
+            screen
+                .contents_between(r, 0, r, u16::MAX)
+                .trim_end()
+                .to_string()
+        })
+        .collect();
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n")
+}

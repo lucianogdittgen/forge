@@ -238,6 +238,16 @@ Tool
 
 Permission  = READ | WRITE | EXECUTE | NETWORK | DESTRUCTIVE
 
+The concrete surface is seven process tools, and nothing else — see ADR-0004:
+
+  proc_start   -> ProcessId          EXECUTE
+  proc_list    -> [ProcessRecord]    READ
+  proc_status  -> ProcessRecord      READ
+  proc_output  -> rendered screen    READ
+  proc_wait    -> outcome | timeout  READ
+  proc_input                         WRITE
+  proc_signal                        DESTRUCTIVE
+
 ProcessManager
   start(command, cwd, env, size)    -> ProcessId        # non-blocking
   get(ProcessId)                    -> ProcessRecord
@@ -270,7 +280,11 @@ Agent-proposed commands are treated as untrusted input. Every tool declares a
 permission class, and `EXECUTE`/`DESTRUCTIVE` operations pass through an explicit
 decision point before reaching the Process Manager. The user always sees what
 the agent is doing — visibility is a security property here, not just a UX one.
-Detail is deferred to ADR-0004.
+
+Two details make this hold rather than merely intend to. The agent's tools act
+on the *same* Process Manager the terminal pane reads from, so it has no private
+channel; and an unclassified tool is treated as `DESTRUCTIVE`, so forgetting to
+classify one fails closed. See ADR-0004.
 
 ## 9. Development-time note
 

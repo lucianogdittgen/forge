@@ -1,0 +1,20 @@
+[package]
+name = "forge-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+forge-process = { version = "0.1.0", path = "../forge-process" }
+forge-terminal = { version = "0.1.0", path = "../forge-terminal" }
+nix = { workspace = true, features = ["signal", "process"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["net", "io-util", "rt-multi-thread", "macros", "sync", "time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+forge-agent = { version = "0.1.0", path = "../forge-agent" }
+tokio = { workspace = true, features = ["full"] }
