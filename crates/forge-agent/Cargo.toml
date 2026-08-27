@@ -1,0 +1,16 @@
+[package]
+name = "forge-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+futures = "0.3.34"
+nix = { workspace = true, features = ["signal", "process"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true

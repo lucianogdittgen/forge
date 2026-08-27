@@ -5,6 +5,7 @@ members = [
     "crates/forge-process",
     "crates/forge-terminal",
     "crates/forge-tui",
+    "crates/forge-agent",
 ]
 
 [workspace.package]
